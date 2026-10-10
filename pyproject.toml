@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boardrunner"
+dynamic = ["version"]
+description = "BoardRunner: automatic firmware rehosting with learned device models, built on FastDyn"
+requires-python = ">=3.10"
+# FastDyn is installed from the pinned submodule: pip install -e deps/fastdyn/src
+dependencies = ["fastdyn>=1.0"]
+
+[tool.setuptools.dynamic]
+version = { attr = "boardrunner.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["boardrunner*"]

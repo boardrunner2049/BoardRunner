@@ -1,0 +1,3 @@
+[submodule "deps/fastdyn"]
+	path = deps/fastdyn
+	url = /scratch/Fastdyn/restructure_fastdyn/FastDyn
