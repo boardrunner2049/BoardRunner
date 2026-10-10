@@ -8,7 +8,16 @@ dynamic = ["version"]
 description = "BoardRunner: automatic firmware rehosting with learned device models, built on FastDyn"
 requires-python = ">=3.10"
 # FastDyn is installed from the pinned submodule: pip install -e deps/fastdyn/src
-dependencies = ["fastdyn>=1.0"]
+dependencies = [
+    "fastdyn>=1.0",
+    "click>=8.1.7,<8.2.0",
+    "cmsis-svd==0.6",
+    "openai>=1.0.0",
+    "scipy>=1.15",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7.0.0"]
 
 [tool.setuptools.dynamic]
 version = { attr = "boardrunner.__version__" }
