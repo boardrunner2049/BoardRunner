@@ -14,7 +14,7 @@ from boardrunner.viomapper.codegen.patch import (
     PatchError
 )
 from boardrunner.viomapper.codegen.compile import (
-    compile_model,
+    compile_models,
     format_compilation_error,
     CompilationError
 )
@@ -206,14 +206,14 @@ def handle_revised_prompt(response_text, output_paths, work_dir):
     return True, ""
 
 
-def handle_compilation(sdk_dir):
-    """Run model compilation and return result.
+def handle_compilation(sources, build_dir):
+    """Compile the model sources into build_dir and return the result.
 
     Returns:
         Tuple of (success: bool, error_context: str, is_setup_error: bool).
     """
     try:
-        success, build_output = compile_model(sdk_dir)
+        success, build_output = compile_models(sources, build_dir)
     except CompilationError as e:
         log.error("Compilation setup failed: %s", str(e))
         return False, str(e), True

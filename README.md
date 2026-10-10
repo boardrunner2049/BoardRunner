@@ -44,7 +44,8 @@ export FASTDYN_REPO_ROOT=/path/to/built/FastDyn
 ```
 
 LibVIO is found through `pkg-config vio`; set `PKG_CONFIG_PATH` to an
-installed LibVIO.
+installed LibVIO (1.x, model contract 1.2 or later). The tests need neither:
+they use a small copy of the contract in `tests/fixtures/contract`.
 
 ## Usage
 
@@ -63,7 +64,15 @@ python -m boardrunner run -c board.toml  # FastDyn's runner
 `-v`, `-q`, `--log-level [LOGGER=]LEVEL` and `--log-file` work as in
 FastDyn and cover both the `boardrunner.*` and `fastdyn.*` loggers. The
 `llm` command needs `OPENAI_API_KEY` (or `--env-file`) for OpenAI, or
-`--model-provider ollama`. The command names are the ones FastDyn used; they
+`--model-provider ollama`.
+
+The prompts take the rules a model follows, the LibVIO API and the
+emulator's host functions from LibVIO's model contract, found with
+`pkg-config --variable=contractdir vio`; `generate` and `verifier` accept
+`--contract-dir PATH` (or `$VIO_CONTRACT_DIR`) instead. Generated models use
+FastDyn's model interface (`<fastdyn/device_model.h>`, ABI v2) and LibVIO v1;
+`llm --compile` builds them with FastDyn's model builder into `--build-dir`
+(default `build/models`) and sends compiler errors back to the LLM. The command names are the ones FastDyn used; they
 change to the VIOMapper stages later.
 
 ## Layout

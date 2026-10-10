@@ -3,6 +3,30 @@
 import pytest
 import os
 import tempfile
+from pathlib import Path
+
+from boardrunner.viomapper.codegen.prompts import contract as contract_module
+
+TEST_CONTRACT = Path(__file__).resolve().parent.parent / "fixtures" / "contract"
+
+
+@pytest.fixture(autouse=True)
+def test_contract(monkeypatch):
+    """Prompts read tests/fixtures/contract, a small copy of LibVIO's model
+    contract, so the tests need no installed LibVIO."""
+    monkeypatch.setenv(contract_module.CONTRACT_DIR_ENV, str(TEST_CONTRACT))
+    contract_module._load.cache_clear()
+    yield TEST_CONTRACT
+    contract_module._load.cache_clear()
+
+
+@pytest.fixture
+def api_section():
+    """Return the "## Available APIs" part of a prompt (up to the rules)."""
+    def extract(prompt):
+        start = prompt.index("## Available APIs")
+        return prompt[start:prompt.index("## Rules for device models", start)]
+    return extract
 
 
 @pytest.fixture

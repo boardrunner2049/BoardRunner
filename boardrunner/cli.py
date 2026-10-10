@@ -49,6 +49,26 @@ def cli(verbose, quiet, log_levels, log_file):
     logs.configure(level=default, levels=overrides, log_file=log_file, namespaces=("boardrunner", "fastdyn"))
 
 
+_contract_dir_option = click.option(
+    '--contract-dir',
+    type=click.Path(file_okay=False, exists=True, resolve_path=True),
+    default=None,
+    metavar='PATH',
+    help='LibVIO model contract directory (rules, API reference, host functions) for the prompts. '
+         'Default: $VIO_CONTRACT_DIR, else `pkg-config --variable=contractdir vio`.'
+)
+
+
+def _load_contract(contract_dir):
+    from .viomapper.codegen.prompts.contract import ContractError, load_contract
+    try:
+        contract = load_contract(contract_dir)
+    except ContractError as e:
+        raise click.ClickException(str(e)) from e
+    log.info("Using the LibVIO model contract %s from %s", contract.version, contract.directory)
+    return contract
+
+
 @cli.command(
     'generate',
     help='Generates the LLM Prompt using the hardware log passed by the user. '
@@ -147,8 +167,8 @@ def cli(verbose, quiet, log_levels, log_file):
     '--no-vio',
     is_flag=True,
     default=False,
-    help='Ablation mode: strip VIO API definitions from the generated prompt, '
-         'providing only base QEMU/FastDyn APIs (raw MMIO callbacks).'
+    help='Ablation mode: strip the LibVIO APIs and the LibVIO-only model rules from the generated '
+         'prompt, leaving only the emulator\'s host functions (raw MMIO callbacks).'
 )
 @click.option(
     '--no-encoder',
@@ -157,13 +177,15 @@ def cli(verbose, quiet, log_levels, log_file):
     help='Ablation mode: skip the Encoder (context minimizer). Feed the raw I/O trace '
          'directly to the LLM prompt instead of the compact automaton.'
 )
+@_contract_dir_option
 def generate(hardware_log, slave_model, reference_model, firmware_code, board, peripheral, model_name,
-             method, n, isr_window, work_dir, svd, model_sources, no_vio, no_encoder):
+             method, n, isr_window, work_dir, svd, model_sources, no_vio, no_encoder, contract_dir):
     """Generates the LLM Prompt using the hardware log passed by the user."""
     # Feature-only imports: keeping them here means core commands such as
     # `fastdyn run` do not need these modules or their dependencies (scipy).
     from .viomapper.encoder import context_minimizer as cm
     from .viomapper.codegen.prompts import prompt_gen as pg
+    contract = _load_contract(contract_dir)
     if slave_model:
         if reference_model is None:
             raise click.UsageError("--slave-model requires --reference-model.")
@@ -185,7 +207,8 @@ def generate(hardware_log, slave_model, reference_model, firmware_code, board, p
             out_dir=work_dir,
             slave_firmware_path=firmware_code,
             reference_model_path=reference_model,
-            slave_type=slave_type
+            slave_type=slave_type,
+            contract=contract,
         )
 
     else:
@@ -246,6 +269,7 @@ def generate(hardware_log, slave_model, reference_model, firmware_code, board, p
                 no_vio=no_vio,
                 model_name=model_name,
                 model_sources=model_sources,
+                contract=contract,
             )
             Path(work_dir).mkdir(parents=True, exist_ok=True)
             output_path = Path(work_dir) / "initial_prompt.txt"
@@ -291,14 +315,16 @@ def generate(hardware_log, slave_model, reference_model, firmware_code, board, p
                     model_sources=model_sources or None,   # pass None so the function applies its heuristic
                     out_dir=work_dir,
                     no_vio=no_vio,
-                    user_obs=''
+                    user_obs='',
+                    contract=contract,
                 )
             else:
                 pg_path = pg.initial_prompt_gen(
                     analysis_dir=cm_path,
                     peripheral=peripheral[0],
                     out_dir=work_dir,
-                    no_vio=no_vio
+                    no_vio=no_vio,
+                    contract=contract,
                 )
 
 
@@ -408,7 +434,7 @@ def generate(hardware_log, slave_model, reference_model, firmware_code, board, p
     '--no-vio',
     is_flag=True,
     default=False,
-    help='Ablation mode: strip VIO API definitions from the correction prompt.'
+    help='Ablation mode: strip the LibVIO APIs and the LibVIO-only model rules from the correction prompt.'
 )
 @click.option(
     '--no-verifier',
@@ -429,15 +455,17 @@ def generate(hardware_log, slave_model, reference_model, firmware_code, board, p
          'is corrected in isolation. Repeat once per --mname. '
          'Example: --ms-map "ADC=ADC1,ADC2,ADC12_Common" --ms-map "DMA_with_DMAMUX1=DMA1,DMAMUX1"'
 )
+@_contract_dir_option
 def verifier(hardware_log, emulation_log, device_models, model_names, board,
              peripheral, method, n, isr_window, work_dir, svd,
-             no_rca, no_encoder, no_vio, no_verifier, ms_map):
+             no_rca, no_encoder, no_vio, no_verifier, ms_map, contract_dir):
     """Verifies the model against hardware and emulation logs."""
     # Feature-only imports: keeping them here means core commands such as
     # `fastdyn run` do not need these modules or their dependencies (scipy).
     from .viomapper.encoder import context_minimizer as cm
     from .viomapper.codegen.prompts import prompt_gen as pg
     from .viomapper.verifier import verifier as verify
+    contract = _load_contract(contract_dir)
     log.info("Running Verifier")
 
     # ── Work directory setup ─────────────────────────────────────────────────
@@ -579,7 +607,7 @@ def verifier(hardware_log, emulation_log, device_models, model_names, board,
 
                 periph_dir = os.path.join(cm_path_hardware, peripheral[0])
                 if os.path.isdir(periph_dir):
-                    original_prompt = pg.generate_prompt(periph_dir)
+                    original_prompt = pg.generate_prompt(periph_dir, contract=contract)
                 else:
                     original_prompt = ""
                     log.warning("Could not find encoder output for --no-verifier fallback.")
@@ -621,6 +649,7 @@ def verifier(hardware_log, emulation_log, device_models, model_names, board,
                     out_dir=work_dir,
                     no_vio=no_vio,
                     no_rca=True,
+                    contract=contract,
                 )
             elif no_encoder:
                 # Ablation A1 correction: use raw traces instead of structured
@@ -646,6 +675,7 @@ def verifier(hardware_log, emulation_log, device_models, model_names, board,
                     emulation_log=emulation_log,
                     peripheral_ranges=peripheral_ranges,
                     no_vio=no_vio,
+                    contract=contract,
                 )
             else:
                 log.warning("Log mismatch! Generating prompt.")
@@ -655,6 +685,7 @@ def verifier(hardware_log, emulation_log, device_models, model_names, board,
                     peripheral=peripheral[0],
                     out_dir=work_dir,
                     no_vio=no_vio,
+                    contract=contract,
                 )
         else:
             log.info("Both hardware log and emulation log matched!")
@@ -674,6 +705,7 @@ def verifier(hardware_log, emulation_log, device_models, model_names, board,
             hardware_log=hardware_log,
             emulation_log=emulation_log,
             model_sources_map=model_sources_map or None,
+            contract=contract,
         )
 
 
@@ -744,14 +776,14 @@ def verifier(hardware_log, emulation_log, device_models, model_names, board,
     '--compile/--no-compile',
     default=False,
     show_default=True,
-    help='Compile the model after writing/patching using the boardrunner SDK.'
+    help='Compile the model(s) after writing/patching, with FastDyn\'s model builder.'
 )
 @click.option(
-    '--sdk-dir',
-    default='boardrunner/boardrunner_sdk',
+    '--build-dir',
+    default='build/models',
     show_default=True,
-    type=click.Path(resolve_path=True),
-    help='Path to the boardrunner SDK directory (for compilation).',
+    type=click.Path(resolve_path=True, file_okay=False),
+    help='Where --compile puts the built models (<name>.so for each <name>.c).',
     metavar='PATH'
 )
 @click.option(
@@ -790,7 +822,7 @@ def verifier(hardware_log, emulation_log, device_models, model_names, board,
 )
 @click.pass_context
 def llm(ctx, work_dir, output, model, model_provider, env_file, temperature,
-        reasoning_effort, stateless, compile, sdk_dir, max_retries, evaluate,
+        reasoning_effort, stateless, compile, build_dir, max_retries, evaluate,
         ollama_url, ollama_num_ctx, ollama_timeout):
     """Sends a prompt to the selected LLM provider and processes the response."""
     # Feature-only imports, kept here so core commands do not depend on the llm package.
@@ -987,7 +1019,7 @@ def llm(ctx, work_dir, output, model, model_provider, env_file, temperature,
 
         # -- Optional compilation step ----------------------------------------
         if compile:
-            compile_success, compile_error, is_setup_error = handle_compilation(sdk_dir)
+            compile_success, compile_error, is_setup_error = handle_compilation(output, build_dir)
             if not compile_success:
                 call_type = "followup" if is_retry else ("revision" if prompt_type == "revised" else "initial")
                 _write_metrics(call_metrics, attempt, call_type, {"result": "compile_fail"})

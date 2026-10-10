@@ -13,48 +13,7 @@ from unittest.mock import patch, MagicMock
 from boardrunner.viomapper.codegen.prompts.prompt_gen import (
     generate_prompt_no_encoder,
     generate_prompt,
-    qemu_api_list,
-    qemu_base_api_list,
 )
-
-
-# ---------------------------------------------------------------------------
-# qemu_base_api_list vs qemu_api_list
-# ---------------------------------------------------------------------------
-
-class TestApiListSplit:
-    """Tests that the base and full API lists are correctly separated."""
-
-    def test_base_list_has_qemu_apis(self):
-        assert "qemu_plugin_raise_irq" in qemu_base_api_list
-        assert "qemu_plugin_timer_alarm" in qemu_base_api_list
-        assert "qemu_plugin_read_memory" in qemu_base_api_list
-        assert "dev_debug" in qemu_base_api_list
-
-    def test_base_list_has_no_vio_apis(self):
-        assert "api_i2c_init_bus" not in qemu_base_api_list
-        assert "api_spi_transfer" not in qemu_base_api_list
-        assert "api_pty_fd_gen" not in qemu_base_api_list
-        assert "api_dma_register_stream" not in qemu_base_api_list
-        assert "api_signal_set" not in qemu_base_api_list
-        assert "I2CBus" not in qemu_base_api_list
-        assert "SPIBus" not in qemu_base_api_list
-
-    def test_full_list_has_both(self):
-        assert "qemu_plugin_raise_irq" in qemu_api_list
-        assert "api_i2c_init_bus" in qemu_api_list
-        assert "api_spi_transfer" in qemu_api_list
-        assert "api_pty_fd_gen" in qemu_api_list
-        assert "I2CBus" in qemu_api_list
-        assert "SPIBus" in qemu_api_list
-
-    def test_base_is_strict_subset(self):
-        """Every API in the base list should also appear in the full list."""
-        for line in qemu_base_api_list.strip().splitlines():
-            line = line.strip()
-            if line.startswith("- `"):
-                func_name = line.split("`")[1].split("(")[0].strip()
-                assert func_name in qemu_api_list, f"{func_name} in base but not in full list"
 
 
 # ---------------------------------------------------------------------------
@@ -104,31 +63,28 @@ class TestNoEncoder:
             peripheral_name="UART0",
             platform_name="Max78000",
         )
-        assert "api_i2c_init_bus" in prompt
+        assert "vio_i2c_bus_init" in prompt
         assert "api_spi_transfer" in prompt
         assert "api_pty_fd_gen" in prompt
 
-    def test_no_vio_strips_vio_apis_from_available_section(self, fake_io_log):
+    def test_no_vio_strips_vio_apis_from_available_section(self, fake_io_log, api_section):
         prompt = generate_prompt_no_encoder(
             hardware_log=fake_io_log,
             peripheral_name="UART0",
             platform_name="Max78000",
             no_vio=True,
         )
-        # Extract just the Available APIs section
-        api_start = prompt.index("## Available APIs")
-        api_end = prompt.index("```", prompt.index("```", api_start) + 3) + 3
-        api_section = prompt[api_start:api_end]
+        apis = api_section(prompt)
 
         # VIO APIs should NOT be in the Available APIs section
-        assert "api_i2c_init_bus" not in api_section
-        assert "api_spi_transfer" not in api_section
-        assert "api_pty_fd_gen" not in api_section
-        assert "I2CBus" not in api_section
-        assert "SPIBus" not in api_section
-        # Base APIs should still be present
-        assert "qemu_plugin_raise_irq" in api_section
-        assert "dev_debug" in api_section
+        assert "vio_i2c_bus_init" not in apis
+        assert "api_spi_transfer" not in apis
+        assert "api_pty_fd_gen" not in apis
+        assert "I2CBus" not in apis
+        assert "SPIBus" not in apis
+        # The emulator's host functions are still present
+        assert "qemu_plugin_raise_irq" in apis
+        assert "host->log" in apis
 
     def test_does_not_contain_encoder_artifacts(self, fake_io_log):
         prompt = generate_prompt_no_encoder(
@@ -192,21 +148,18 @@ class TestNoVioInFullPipeline:
 
     def test_full_prompt_has_vio_apis(self, analysis_dir):
         prompt = generate_prompt(analysis_dir, no_vio=False)
-        assert "api_i2c_init_bus" in prompt
+        assert "vio_i2c_bus_init" in prompt
         assert "api_spi_transfer" in prompt
 
-    def test_no_vio_prompt_lacks_vio_apis_in_available_section(self, analysis_dir):
+    def test_no_vio_prompt_lacks_vio_apis_in_available_section(self, analysis_dir, api_section):
         prompt = generate_prompt(analysis_dir, no_vio=True)
-        # Extract just the Available APIs section
-        api_start = prompt.index("## Available APIs")
-        api_end = prompt.index("```", prompt.index("```", api_start) + 3) + 3
-        api_section = prompt[api_start:api_end]
+        apis = api_section(prompt)
 
-        assert "api_i2c_init_bus" not in api_section
-        assert "api_spi_transfer" not in api_section
-        assert "api_pty_fd_gen" not in api_section
-        # Base APIs still present
-        assert "qemu_plugin_raise_irq" in api_section
+        assert "vio_i2c_bus_init" not in apis
+        assert "api_spi_transfer" not in apis
+        assert "api_pty_fd_gen" not in apis
+        # Host functions still present
+        assert "qemu_plugin_raise_irq" in apis
 
     def test_no_vio_prompt_still_has_encoder_data(self, analysis_dir):
         prompt = generate_prompt(analysis_dir, no_vio=True)
@@ -398,7 +351,7 @@ class TestNoEncoderModelName:
         assert "dma_with_dmamux1" in intro.lower()
         assert "DMA_with_DMAMUX1" in prompt  # original-case appears later too
 
-    def test_no_vio_combines_with_model_name(self, fake_io_log):
+    def test_no_vio_combines_with_model_name(self, fake_io_log, api_section):
         """no_vio still strips VIO APIs when model_name is also set."""
         prompt = generate_prompt_no_encoder(
             hardware_log=fake_io_log,
@@ -408,11 +361,9 @@ class TestNoEncoderModelName:
             model_sources=("DMA1", "DMAMUX1"),
             no_vio=True,
         )
-        api_start = prompt.index("## Available APIs")
-        api_end = prompt.index("```", prompt.index("```", api_start) + 3) + 3
-        api_section = prompt[api_start:api_end]
-        assert "api_dma_register_stream" not in api_section
-        assert "api_pty_fd_gen" not in api_section
+        apis = api_section(prompt)
+        assert "api_dma_register_stream" not in apis
+        assert "api_pty_fd_gen" not in apis
         # Skeleton naming still honors model_name.
         assert "dma_with_dmamux1_read" in prompt
 

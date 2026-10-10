@@ -29,9 +29,8 @@ from boardrunner.viomapper.codegen.prompts.prompt_gen import (
     _render_apis_and_rules,
     _write_prompt,
     iteration_prompt_gen_multiple_periph,
-    qemu_api_list,
-    qemu_base_api_list,
 )
+from boardrunner.viomapper.codegen.prompts.contract import load_contract
 
 
 # ---------------------------------------------------------------------------
@@ -169,47 +168,39 @@ class TestBuildCompositionalModelSourceBlocks:
 
 
 class TestRenderApisAndRules:
-    """Cover _render_apis_and_rules — the no_vio lens."""
+    """Cover _render_apis_and_rules — the contract text and the no_vio lens."""
 
     def test_default_includes_vio_apis_and_guidance(self):
-        rendered = _render_apis_and_rules(
-            api_list=qemu_api_list,
-            fw_rules="STUB_RULES",
-            no_vio=False,
-        )
+        rendered = _render_apis_and_rules(load_contract(), no_vio=False)
         assert "## Available APIs" in rendered
-        assert "STUB_RULES" in rendered
+        assert "## Rules for device models" in rendered
         # VIO APIs must be present in the rendered API block.
-        assert "api_i2c_init_bus" in rendered
+        assert "vio_i2c_bus_init" in rendered
         assert "api_dma_request_data" in rendered
-        # VIO-specific guidance sections must be included.
-        assert "Observability" in rendered or "observability" in rendered.lower()
-        assert "Inter-Peripheral" in rendered or "inter-peripheral" in rendered.lower()
+        # The contract's LibVIO-only rules and the VIO guidance are included.
+        assert "Observability and host I/O" in rendered
+        assert "Missing API Policy" in rendered
+        assert "Host-Side I/O Setup" in rendered
 
     def test_no_vio_excludes_vio_apis_and_guidance(self):
-        rendered = _render_apis_and_rules(
-            api_list=qemu_base_api_list,
-            fw_rules="STUB_RULES",
-            no_vio=True,
-        )
+        rendered = _render_apis_and_rules(load_contract(), no_vio=True)
         assert "## Available APIs" in rendered
         # VIO APIs gone.
-        assert "api_i2c_init_bus" not in rendered
+        assert "vio_i2c_bus_init" not in rendered
         assert "api_dma_request_data" not in rendered
         assert "api_pty_fd_gen" not in rendered
-        # VIO-specific guidance sections gone too.
-        assert "Inter-Peripheral Communication" not in rendered
-        assert "Observability & Host I/O" not in rendered
-        # The framework rules string the caller passes through is preserved.
-        assert "STUB_RULES" in rendered
+        # LibVIO-only rules and VIO guidance gone too.
+        assert "Observability and host I/O" not in rendered
+        assert "Missing API Policy" not in rendered
+        assert "Host-Side I/O Setup" not in rendered
+        # The rest of the rules and the host functions stay.
+        assert "Stateful emulation over trace memorization" in rendered
+        assert "qemu_plugin_raise_irq" in rendered
 
-    def test_api_list_argument_is_respected(self):
-        """The caller controls which API list is rendered (base vs full)."""
-        full = _render_apis_and_rules(qemu_api_list, "X", no_vio=False)
-        base = _render_apis_and_rules(qemu_base_api_list, "X", no_vio=True)
-        # Full has VIO; base does not.
-        assert "api_i2c_init_bus" in full
-        assert "api_i2c_init_bus" not in base
+    def test_extra_blocks_come_after_the_rules(self):
+        rendered = _render_apis_and_rules(load_contract(), no_vio=False, extra=("STUB_EXTRA",))
+        assert rendered.index("## Rules for device models") < rendered.index("STUB_EXTRA") \
+            < rendered.index("Host-Side I/O Setup")
 
 
 class TestBuildCompositionalDiffBlocks:
@@ -321,7 +312,7 @@ class TestCompositionalDefaultBranch:
         assert "[MISMATCH]" in body
         assert "[PASSING]" in body
         # VIO APIs are included by default.
-        assert "api_i2c_init_bus" in body
+        assert "vio_i2c_bus_init" in body
         assert "api_dma_request_data" in body
 
     def test_all_passing_returns_none(self, two_models, cm_paths, tmp_path):
@@ -794,10 +785,10 @@ class TestCompositionalNoVio:
                 no_vio=True,
             )
         body = Path(path).read_text()
-        api_section = body.split("## Available APIs")[1].split("```")[1]
-        assert "api_i2c_init_bus" not in api_section
+        api_section = body.split("## Available APIs")[1].split("## Rules for device models")[0]
+        assert "vio_i2c_bus_init" not in api_section
         assert "api_dma_register_stream" not in api_section
-        assert "qemu_plugin_raise_irq" in api_section  # base API survives
+        assert "qemu_plugin_raise_irq" in api_section  # host functions survive
 
     def test_no_vio_with_no_encoder(self, two_models, cm_paths, io_logs, tmp_path):
         hw, em = cm_paths
@@ -814,7 +805,7 @@ class TestCompositionalNoVio:
             hardware_log=hw_log,
         )
         body = Path(path).read_text()
-        api_section = body.split("## Available APIs")[1].split("```")[1]
+        api_section = body.split("## Available APIs")[1].split("## Rules for device models")[0]
         assert "api_dma_request_data" not in api_section
         assert "## Raw Hardware I/O Trace" in body  # no_encoder still in effect
 
@@ -838,7 +829,7 @@ class TestCompositionalNoVio:
         assert isinstance(result, dict)
         for path in result.values():
             body = Path(path).read_text()
-            api_section = body.split("## Available APIs")[1].split("```")[1]
+            api_section = body.split("## Available APIs")[1].split("## Rules for device models")[0]
             assert "api_pty_fd_gen" not in api_section
             assert "[MISMATCH]" not in body
             assert Path(path).name == "initial_prompt.txt"

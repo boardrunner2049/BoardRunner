@@ -22,8 +22,6 @@ import pytest
 
 from boardrunner.viomapper.codegen.prompts.prompt_gen import (
     iteration_prompt_gen,
-    qemu_api_list,
-    qemu_base_api_list,
 )
 
 
@@ -148,9 +146,9 @@ class TestSinglePeriphDefault:
             device_model_path=model_file,
         )
         body = Path(path).read_text()
-        assert "api_i2c_init_bus" in body
+        assert "vio_i2c_bus_init" in body
         assert "api_pty_fd_gen" in body
-        assert "api_dma_request_data" in body  # new API present
+        assert "api_dma_request_data" in body
 
     def test_max_model_chars_truncates_source(self, tmp_path):
         big = tmp_path / "big_model.c"
@@ -325,8 +323,7 @@ class TestSinglePeriphNoVio:
 
     def _api_section(self, prompt):
         api_start = prompt.index("## Available APIs")
-        api_end = prompt.index("```", prompt.index("```", api_start) + 3) + 3
-        return prompt[api_start:api_end]
+        return prompt[api_start:prompt.index("## Rules for device models", api_start)]
 
     def test_no_vio_with_default_branch(self, model_file, tmp_path):
         path = iteration_prompt_gen(
@@ -337,10 +334,10 @@ class TestSinglePeriphNoVio:
             no_vio=True,
         )
         api = self._api_section(Path(path).read_text())
-        assert "api_i2c_init_bus" not in api
+        assert "vio_i2c_bus_init" not in api
         assert "api_dma_register_stream" not in api
         assert "api_pty_fd_gen" not in api
-        assert "qemu_plugin_raise_irq" in api  # base API survives
+        assert "qemu_plugin_raise_irq" in api  # host functions survive
 
     def test_no_vio_with_no_encoder(self, model_file, io_logs, tmp_path):
         hw_log, _ = io_logs
@@ -369,7 +366,7 @@ class TestSinglePeriphNoVio:
         )
         body = Path(path).read_text()
         api = self._api_section(body)
-        assert "api_i2c_init_bus" not in api
+        assert "vio_i2c_bus_init" not in api
         # Both flags remain in effect.
         assert Path(path).name == "initial_prompt.txt"
 

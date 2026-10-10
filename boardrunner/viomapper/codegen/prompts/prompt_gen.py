@@ -7,180 +7,10 @@ import click
 from pathlib import Path
 
 from boardrunner.viomapper.verifier import verifier as verify
+from boardrunner.viomapper.codegen.prompts.contract import load_contract
 
 log = logging.getLogger(__name__)
 
-
-# ── Critical framework rules that must appear in every generated prompt ──────
-# These prevent common LLM mistakes that are impossible to infer from trace data alone.
-framework_rules = """
-## Critical Framework Rules
-
-### 1. Absolute Addressing
-The emulation framework passes **absolute guest physical addresses** to the model's
-read/write callbacks — NOT offsets relative to the peripheral base. For example, a
-read to a register at offset 0x08 of a peripheral whose base address is 0x40022000
-arrives as `addr = 0x40022008`.
-
-**You MUST subtract the peripheral's base address** from `addr` before comparing
-against register offsets. For example:
-```c
-uint64_t my_periph_read(void *opaque, hwaddr addr, unsigned size) {
-    // Convert absolute address to register offset
-    hwaddr offset = addr - MY_PERIPH_BASE;
-    switch (offset) {
-        case 0x00: /* first register  */ ...
-        case 0x08: /* second register */ ...
-    }
-}
-```
-If a device covers multiple disjoint address ranges (e.g., peripheral A at
-0x40020000–0x400203FF and peripheral B at 0x40020800–0x40020BFF), your model must
-handle both absolute ranges by checking which range the incoming address falls into
-and subtracting the appropriate base for that range.
-
-The trace data shows these absolute addresses directly (e.g., `address = 0x40022008`).
-Use them to infer each peripheral's base address and register layout.
-
-### 2. Callback Function Signatures
-
-#### 2a. MMIO read/write callbacks (`_read` / `_write`)
-The framework passes the pointer returned by `_init` as the `opaque` argument to
-every subsequent `_read` and `_write` call. Your `_init` **MUST return a pointer to
-your state struct** so the framework can wire it up correctly:
-
-```c
-static MyPeriphState g_state;
-
-void* myperiph_init(ConfigSection* model_info) {
-    memset(&g_state, 0, sizeof(g_state));
-    // ... initialization ...
-    return &g_state;   // REQUIRED — framework stores this and passes it as opaque
-}
-
-uint64_t myperiph_read(void *opaque, hwaddr addr, unsigned size) {
-    MyPeriphState *s = (MyPeriphState *)opaque;  // valid: framework set this from init
-    hwaddr offset = addr - MY_BASE;
-    // ...
-}
-
-void myperiph_write(void *opaque, hwaddr addr, uint64_t value, unsigned size) {
-    MyPeriphState *s = (MyPeriphState *)opaque;
-    hwaddr offset = addr - MY_BASE;
-    // ...
-}
-```
-
-#### 2b. Inter-peripheral / timer callbacks
-Any function pointer registered with a framework API such as `api_signal_register`,
-`api_dma_register_stream`, or `qemu_plugin_timer_new_ns` **MUST exactly match** the
-expected signature, and those callbacks DO receive a valid `opaque` pointer (the one
-you passed at registration time). Your callback functions **MUST** accept the `opaque`
-parameter and cast it to access your state:
-
-```c
-// CORRECT — matches the expected void (*)(void *) signature:
-static void my_callback(void *opaque) {
-    MyPeriphState *s = (MyPeriphState *)opaque;  // valid: you registered &g_state
-    // ...
-}
-
-// WRONG — empty parameter list, undefined behavior when caller passes an argument:
-static void my_callback() { ... }
-```
-
-- **Never cast function pointers** to hide type mismatches. If the compiler warns
-  about an incompatible function pointer, fix the function signature instead.
-- This applies to ALL inter-peripheral / timer callbacks: timer callbacks, signal
-  handlers, DMA request handlers, and any other API that accepts a function pointer
-  and an opaque/data pointer.
-
-### 3. Stateful Emulation over Trace Memorization
-You must implement a dynamic, stateful model. The trace data is EVIDENCE for
-reverse-engineering the register logic — it is NOT a lookup table to copy from.
-
-- Never emit "record-and-replay" code that hardcodes return values from the
-  trace (e.g., `if (addr == X && count == N) return Y;`). Such code only works
-  for the exact execution that was recorded and breaks on any other run.
-- DO maintain a state struct whose fields represent register values.
-- DO update state based on firmware writes at runtime (e.g., set/clear bits via
-  masking when the firmware writes to a control register).
-- DO derive read return values from current state, not from trace constants.
-- DO keep the logic minimal — only implement behavior the trace evidence supports.
-  Do not invent complex state machines, timers, or hardware features beyond what
-  the trace implies. However, you SHOULD use your knowledge of the peripheral's
-  reference manual for **bit field semantics only**: which bits within a register
-  are read-only vs read-write, what individual fields represent (e.g. status
-  flags, line state), and reset values. The trace is AUTHORITATIVE for register
-  offsets, addresses, and runtime values — never override trace-derived offsets
-  with reference manual memory maps. The reference manual helps you interpret
-  WHY a bit behaves a certain way (e.g. a bit is read-only because it reflects
-  hardware line state and must not be echoed from software writes).
-
-### 4. Initialization and ConfigSection
-The `_init` function receives a `ConfigSection* model_info` pointer that contains
-the peripheral's configuration from the platform description (base address, IRQ
-numbers, bus connections, etc.). Use it when calling bus-init APIs like
-`api_i2c_init_bus(model_info)` or `api_spi_init_bus(model_info)`. Do not
-hardcode values that can be read from the configuration.
-"""
-
-def _strip_vio_from_rules(rules: str) -> str:
-    """Remove VIO API references from framework_rules for A3 ablation."""
-    import re
-    result = rules
-    # Rule 2b: replace VIO API examples with timer-only
-    result = result.replace(
-        'such as `api_signal_register`,\n`api_dma_register_stream`, or `qemu_plugin_timer_new_ns`',
-        'such as `qemu_plugin_timer_new_ns`'
-    )
-    # Rule 2b: strip VIO callback types from the list
-    result = result.replace(
-        'This applies to ALL inter-peripheral / timer callbacks: timer callbacks, signal\n  handlers, DMA request handlers, and any other API',
-        'This applies to ALL timer callbacks: timer callbacks and any other API'
-    )
-    # Rule 2b: rename section header to remove inter-peripheral reference
-    result = result.replace(
-        '#### 2b. Inter-peripheral / timer callbacks',
-        '#### 2b. Timer callbacks'
-    )
-    # Rule 4: strip bus-init API references
-    result = re.sub(
-        r'### 4\. Initialization and ConfigSection.*?(?=\n"""|\Z)',
-        '### 4. Initialization and ConfigSection\n'
-        'The `_init` function receives a `ConfigSection* model_info` pointer that contains\n'
-        'the peripheral\'s configuration from the platform description (base address, IRQ\n'
-        'numbers, etc.). Do not hardcode values that can be read from the configuration.',
-        result, flags=re.DOTALL
-    )
-    return result
-
-
-observability_guidance = """\
-## Observability & Host I/O
-If the peripheral's firmware-level behavior implies interaction with an external \
-entity (e.g., receiving characters on a serial line, toggling user-visible outputs, \
-reading sensor data from an external bus), the model MUST expose that interaction to \
-the host using the appropriate I/O API from the list above (PTY for serial streams, \
-FIFO for generic byte pipes, TAP for network frames, I2C/SPI buses for attached \
-devices, etc.). Infer which API to use from the register semantics and trace \
-patterns — do not ask the user. The goal is to make the emulated peripheral \
-observable and interactive from the host side wherever the real hardware would \
-have been observable and interactive to a user or external system.
-"""
-
-inter_peripheral_guidance = """\
-## Inter-Peripheral Communication
-If the peripheral interacts with other hardware blocks at runtime (e.g., triggering \
-a DMA transfer after a conversion completes, raising a signal line that another \
-peripheral listens on, or sharing an IRQ), express that relationship using the \
-framework's inter-peripheral APIs (`api_dma_request`, `api_dma_register_stream`, \
-`api_signal_set`, `api_signal_register`, etc.) from the API list above.
-
-Do NOT invent direct function calls into another peripheral model's private code. \
-All cross-peripheral interaction MUST go through the shared APIs so that models \
-remain independently replaceable.
-"""
 
 context_peripheral_instructions = """\
 ### How to Use Context Peripheral Data
@@ -233,8 +63,8 @@ wrong data, not ACK-ing correctly, or mishandling a protocol sequence):
    correct it alongside the master model.
 
 The slave model will have the following callback interface that MUST NOT be changed:
-- For I2C slaves: `slave_i2c_event`, `slave_i2c_send`, `slave_i2c_receive`
-- For SPI slaves: `slave_spi_set_cs`, `slave_spi_transfer`
+- For I2C slaves: `vio_i2c_slave_init`, `vio_i2c_slave_event`, `vio_i2c_slave_send`, `vio_i2c_slave_recv`
+- For SPI slaves: `vio_spi_slave_init`, `vio_spi_slave_set_cs`, `vio_spi_slave_transfer`
 """
 
 
@@ -276,135 +106,98 @@ implement self-clearing/auto-transitioning bits in that register!
 """
 
 
-# Base QEMU/FastDyn APIs (always available, even in --no-vio ablation mode)
-qemu_base_api_list = """
-- `int qemu_plugin_write_memory(unsigned long long addr, uint8_t *mem_buf, int len)`: Writes `len` bytes from `mem_buf` to guest memory at `addr`. Returns **0 on success, non-zero on error** — does NOT return the byte count (unlike POSIX read/write). Valid for RAM addresses only; calls targeting an address inside the SoC's MMIO window are blocked by QEMU's per-MemoryRegion re-entrancy guard and return zero with a `Blocked re-entrant IO` warning.
-- `int qemu_plugin_read_memory(unsigned long long addr, uint8_t *mem_buf, int len)`: Reads `len` bytes from guest memory at `addr` into `mem_buf`. Returns **0 on success, non-zero on error** — does NOT return the byte count. Same RAM-only restriction as `qemu_plugin_write_memory`.
-- `int qemu_plugin_read_register(int reg, uint8_t *buf)`: Reads a register of VM. reg is number of register 0 is R0 in ARM.
-- `void qemu_plugin_set_register(uint8_t *mem_buf, int reg)`: Writes a register of VM. reg is number of register 0 is R0 in ARM.
-- `void qemu_plugin_raise_irq(int irq, false)`: Raises an interrupt line, MUST: use interrupt + 16, here false means non-secure interrupt, dont change it to true!.
-- `void qemu_plugin_timer_alarm(uint64_t timer_fd, uint64_t delay_ns)`: Accepts a timer's handle and an absolute nanosecond timestamp to arm that timer to fire at the specified moment for one shot. **Important:** timer callbacks only fire at translation-block boundaries, not during back-to-back MMIO accesses. If firmware polls a register in a tight loop, virtual time barely advances and a scheduled alarm may not fire before the loop ends. For peripherals with compare-match or timeout logic, also check the condition synchronously inside the relevant read callback (e.g. when firmware reads a counter register, compare the computed count against the threshold and raise the IRQ immediately if crossed).
-- `int64_t qemu_plugin_get_virtual_timer(void)`: Returns virtual clock (monotonic up counter) of the system. **Note:** this clock only advances at translation-block boundaries; consecutive calls during rapid MMIO accesses within the same block may return the same value.
-- `uint64_t qemu_plugin_timer_new_ns(void (*cb)(void *), void *data)`: Accepts a callback function and user data to create a new, unscheduled timer object for a future one-shot event, returning a uint64_t handle that must be armed manually.
-- `uint64_t qemu_plugin_timer_new_period_ns(void (*cb)(void *), void *data, uint64_t period)`: Accepts a callback function, user data, and a nanosecond period to create and arm a periodic timer that executes the callback at each interval, returning a uint64_t timer handle.
-- `void dev_debug(char *str)`: Any debug messages must be logged using this function.
-"""
+# ── The model contract (rules, LibVIO API, host functions) comes from LibVIO ─
+# See contract.py. Everything below is BoardRunner's own: how the pipeline
+# asks for a model, not what a model is.
 
-# Define the full QEMU API context (base + VIO)
-qemu_api_list = """
-- `int qemu_plugin_write_memory(unsigned long long addr, uint8_t *mem_buf, int len)`: Writes `len` bytes from `mem_buf` to guest memory at `addr`. Returns **0 on success, non-zero on error** — does NOT return the byte count (unlike POSIX read/write). Valid for RAM addresses only; calls targeting an address inside the SoC's MMIO window are blocked by QEMU's per-MemoryRegion re-entrancy guard and return zero with a `Blocked re-entrant IO` warning.
-- `int qemu_plugin_read_memory(unsigned long long addr, uint8_t *mem_buf, int len)`: Reads `len` bytes from guest memory at `addr` into `mem_buf`. Returns **0 on success, non-zero on error** — does NOT return the byte count. Same RAM-only restriction as `qemu_plugin_write_memory`.
-- `int qemu_plugin_read_register(int reg, uint8_t *buf)`: Reads a register of VM. reg is number of register 0 is R0 in ARM.
-- `void qemu_plugin_set_register(uint8_t *mem_buf, int reg)`: Writes a register of VM. reg is number of register 0 is R0 in ARM.
-- `void qemu_plugin_raise_irq(int irq, false)`: Raises an interrupt line, MUST: use interrupt + 16, here false means non-secure interrupt, dont change it to true!.
-- `void qemu_plugin_timer_alarm(uint64_t timer_fd, uint64_t delay_ns)`: Accepts a timer's handle and an absolute nanosecond timestamp to arm that timer to fire at the specified moment for one shot. **Important:** timer callbacks only fire at translation-block boundaries, not during back-to-back MMIO accesses. If firmware polls a register in a tight loop, virtual time barely advances and a scheduled alarm may not fire before the loop ends. For peripherals with compare-match or timeout logic, also check the condition synchronously inside the relevant read callback (e.g. when firmware reads a counter register, compare the computed count against the threshold and raise the IRQ immediately if crossed).
-- `int64_t qemu_plugin_get_virtual_timer(void)`: Returns virtual clock (monotonic up counter) of the system. **Note:** this clock only advances at translation-block boundaries; consecutive calls during rapid MMIO accesses within the same block may return the same value.
-- `uint64_t qemu_plugin_timer_new_ns(void (*cb)(void *), void *data)`: Accepts a callback function and user data to create a new, unscheduled timer object for a future one-shot event, returning a uint64_t handle that must be armed manually.
-- `uint64_t qemu_plugin_timer_new_period_ns(void (*cb)(void *), void *data, uint64_t period)`: Accepts a callback function, user data, and a nanosecond period to create and arm a periodic timer that executes the callback at each interval, returning a uint64_t timer handle.
-- `void dev_debug(char *str)`: Any debug messages must be logged using this function.
-- `int api_pty_fd_gen(const char* dev_name)`: Takes a string device name (e.g. \"usart6\") and returns an integer file descriptor for a host-side pseudo-terminal device. The actual PTY path is determined by the framework at runtime.
-- `void api_pty_write_req(int fd, uint8_t value)`: Takes a file descriptor fd and a byte value as input to write the byte to the pseudo-terminal, with no output.
-- `int api_pty_read_nonblock(int fd, uint8_t *buff);`: Attempts to read a single byte from the pseudo-terminal fd in non-blocking mode, returning a status.
-- `I2CBus api_i2c_init_bus(ConfigSection* model_info)`: Initializes an I2C bus from a configuration section and returns the I2CBus struct by value.
-- `int api_i2c_start_transfer(I2CBus* bus, uint8_t address, bool is_recv)`: Starts an I2C transaction with a slave device.
-- `int api_i2c_start_transfer_10bit(I2CBus* bus, uint16_t address, bool is_recv)`: Starts an I2C transaction with a slave device when the address is 10bit.
-- `void api_i2c_end_transfer(I2CBus* bus)`: Ends the current I2C transaction.
-- `int api_i2c_send(I2CBus *bus, uint8_t data)`: Sends a byte to the active I2C slave device.
-- `uint8_t api_i2c_recv(I2CBus *bus)`: Receives a byte from the active I2C slave device.
-- `SPIBus api_spi_init_bus(ConfigSection* model_info)`: Takes a ConfigSection pointer, parses the SPI configuration, loads all specified slave device models, and returns a populated SPIBus structure.
-- `uint32_t api_spi_transfer(SPIBus *bus, uint32_t val)`: Performs a full-duplex transfer on the bus by sending val (MOSI) to the currently selected slave and returning the uint32_t value received from it (MISO).
-- `void api_spi_set_cs(SPIBus *bus, int cs_id, int level)`: Sets the logic state of a chip select line by taking a cs_id and level (0=active, 1=inactive), and notifies all relevant slaves by calling their set_cs callback.
-- `void api_dma_register_stream(int controller_id, int stream_id, dma_request_handler_t handler, void *opaque)`: Called by a DMA model to register a no-payload handler for a specific DMA controller (e.g. 1 for DMA1) and stream index.
-- `void api_dma_request(int controller_id, int stream_id)`: Called by a peripheral to trigger a no-payload DMA request; the registered handler is invoked asynchronously outside MMIO context.
-- `void api_dma_register_stream_data(int controller_id, int stream_id, void (*handler)(void *opaque, const uint8_t *data, int len), void *opaque)`: Called by a DMA model to register a payload-carrying handler. The handler receives the bytes submitted via `api_dma_request_data`.
-- `int api_dma_request_data(int controller_id, int stream_id, uint32_t target_addr, const uint8_t *data, int len)`: Called by a source peripheral to trigger a DMA request with `len` payload bytes (max 8). `target_addr` is the exact memory-mapped register address (e.g., SPI2_DR) to properly correlate memory logs. Returns 0 on success, negative on error.
-- `uint16_t api_adc_get_sample(int adc_id, int channel)`: Returns the current 12-bit sample (right-aligned in a uint16_t) for a given ADC unit and channel. Uses a host-bound source if one has been registered, otherwise a framework default.
-- `uint16_t api_adc_default_sample(int adc_id, int channel)`: Returns the framework default sample for a given ADC unit and channel, ignoring any bound source.
-- `void api_adc_bind_input(int adc_id, int channel, uint16_t (*cb)(void *opaque), void *opaque)`: Registers a host-side callback that supplies samples for a specific ADC channel. Pass `cb == NULL` to clear a previous binding.
-- `void api_signal_register(int signal_id, signal_handler_t handler, void *opaque)`: Called by a sink peripheral model (for example EXTI). Registers a callback for a logical signal line such as EXTI line 13.
-- `void api_signal_set(int signal_id, bool level)`: Called by a source peripheral model (for example GPIO). Publishes the logical level for a signal line. The API is level-based; edge detection belongs in the receiving model.
-- `int api_fifo_open(const char *path)`: Creates and opens a named pipe (FIFO) at the specified path using O_RDWR to prevent EOF when the external writer disconnects.
-- `int api_fifo_write(int fd, const void *data, int len)`: Writes a data buffer of a specified length to the FIFO file descriptor.
-- `int api_fifo_read_nonblock(int fd, uint8_t *out_byte)`: Reads a single byte from the FIFO in non-blocking mode. Returns 1 if a byte was read, 0 if the buffer is empty.
-- `void api_fifo_close(int fd, const char *path)`: Closes the file descriptor and removes (unlinks) the named pipe file from the filesystem.
-- `int api_file_open(const char *filename, int mode)`: Opens a host file for persistent storage (mode 0: read-only, mode 1: read/write/create). Returns fd.
-- `int api_file_pread(int fd, void *buf, int len, uint64_t offset)`: Reads `len` bytes from `fd` at `offset` into `buf`. Fills buffer with 0x00 on EOF. Returns number of bytes read.
-- `int api_file_pread_fill(int fd, void *buf, int len, uint64_t offset, uint8_t fill_val)`: Reads `len` bytes from `fd` at `offset` into `buf`. Fills remainder with `fill_val` on EOF (useful for 0xFF EEPROM initialization). Returns number of bytes read.
-- `int api_file_pwrite(int fd, const void *buf, int len, uint64_t offset)`: Writes `len` bytes from `buf` to `fd` at `offset`. Returns number of bytes written.
-- `uint64_t api_file_get_size(int fd)`: Returns the current size of the file in bytes.
-- `void api_file_close(int fd)`: Closes the host file descriptor.
+def _contract(contract):
+    return contract if contract is not None else load_contract()
 
-// --- I2C Bus struct definitions here ---
-typedef struct {
-    char* name; //Name of the slave
-    int address;    //address for which the slave will be registered
-    SlaveSendFunc send; //Call this function when you want to send data and get ack from the slave device.
-    SlaveRecvFunc recv; //Call this function when you want to receive data from the slave device.
-    SlaveEventFunc event; //Call this function when you want to start transmission
-} SlaveDetails;
 
-typedef struct {
-    int num_slaves;
-    SlaveDetails* slave; //Dynamic array of slaves
-} SlaveList;
+def _render_apis(contract, no_vio, audiences=("model",)):
+    """The functions a model may call: host functions and, unless no_vio, LibVIO."""
+    return (
+        "## Available APIs\n"
+        "You **must** use the following APIs to construct the device model. "
+        "Pay close attention to the callback signatures.\n\n"
+        + contract.api(audiences, vio=not no_vio)
+    )
 
-typedef struct {
-    SlaveList Slaves;  //Constant once registered on i2c_init_bus
-    SlaveDetails* current_dev;//Current devices show the current devices being used for the transaction
-    uint8_t saved_address; //saved_address is the address initiated for the transaction by the master.
-} I2CBus;
-// --- End of struct definitions ---
 
-// --- SPI Bus struct definitions here ---
-#define NUM_CS_LINES 4          //USER can change the max number based on the requirement
+def _includes_note(no_vio):
+    if no_vio:
+        return "Including `<fastdyn/device_model.h>` gives you access to all the functions listed above."
+    return ("Including `<fastdyn/device_model.h>` and `<vio/vio.h>` gives you access to all the "
+            "functions listed above.")
 
-typedef struct {
-    char* name;                 //Name of the slave
-    int cs_id;                  //Chip select id for which the device will be registered
-    int cs_enable;              //is the current chip enable
-    SlaveTransferFunc transfer; //transfer function used to send and receive the data to/from slave
-    SlaveSetcsFunc set_cs;      //function to tell the slave it is selected
-} SpiSlaveDetails;
 
-typedef struct {
-    int num_slaves;
-    SpiSlaveDetails* slave; //Dynamic array of slaves
-} SpiSlaveList;
+def _model_sketch(name, no_vio=False):
+    """The shape of a device model (FastDyn model ABI v2) named after ``name``."""
+    lower = name.lower()
+    vio_include = "" if no_vio else "#include <vio/vio.h>\n"
+    return f"""```c
+// Device Model for {name}
+#include <fastdyn/device_model.h>
+{vio_include}#include <stdlib.h>
 
-typedef struct {
-    SpiSlaveList Slaves;  //Registered on spi_init_bus
-} SPIBus;
-// --- End of struct definitions ---
+// Inferred Register Functions:
+// ... add registers here ...
 
-// --- Start of DMA Info
+// All state of one device; the same model may serve several devices
+typedef struct {{
+    uint64_t base;  // from dev->ranges[0].base
+    // ... register state ...
+}} {name}State;
 
-#define MAX_DMA_STREAMS 16
+// This function will emulate all device reads
+static uint64_t {lower}_read(void *opaque, hwaddr addr, unsigned size, uint64_t pc) {{
+    {name}State *s = opaque;
+    // ... return register value based on offset (addr - s->base) ...
+}}
 
-// --- End of DMA Info
+// This function will emulate all device writes
+static void {lower}_write(void *opaque, hwaddr addr, uint64_t value, unsigned size, uint64_t pc) {{
+    {name}State *s = opaque;
+    // ... update register state based on offset (addr - s->base) and value ...
+}}
 
-// --- Start of Signals API Info
+// Called once per device; the returned state is passed as opaque to _read/_write
+static void *{lower}_init(const FdDevice *dev, const char *config_json, const FdHost *host) {{
+    {name}State *s = calloc(1, sizeof(*s));
+    if (!s) return NULL;
+    s->base = dev->ranges[0].base;
+    // ... reset values, settings from config_json ...
+    return s;
+}}
 
-#define MAX_SIGNALS 128
+const FdModel fastdyn_model = {{
+    FASTDYN_MODEL_ABI_FIELDS,
+    .init = {lower}_init,
+    .read = {lower}_read,
+    .write = {lower}_write,
+}};
+```"""
 
-typedef void (*signal_handler_t)(void *opaque, int signal_id, bool level);
 
-// --- End of Signals API Info
+def _render_apis_and_rules(contract, no_vio, extra=()):
+    """APIs, the missing-API policy, the contract's rules, ``extra`` blocks and
+    the host-I/O section (the VIO-only parts are left out with no_vio)."""
+    parts = [
+        _render_apis(contract, no_vio),
+        "" if no_vio else api_missing_note,
+        contract.rules(vio=not no_vio),
+        *extra,
+        "" if no_vio else host_io_section,
+    ]
+    return "\n\n".join(p for p in parts if p)
 
-// --- Network Backend APIs (Linux TAP) ---
-// 1. Init TAP interface (NON-BLOCKING). Returns fd.
-int api_tap_init(const char *dev_name);
-// 2. Send raw frame to host.
-int api_tap_send(int fd, const uint8_t *buf, int len);
-// 3. Poll host for incoming frame. Returns length or -1.
-int api_tap_recv_nonblock(int fd, uint8_t *buf, int max_len);
-"""
 
-def initial_prompt_gen_multiple_periphs(analysis_dir, model_name, peripherals, out_dir, model_sources, no_vio=False, **kwargs):
+def initial_prompt_gen_multiple_periphs(analysis_dir, model_name, peripherals, out_dir, model_sources, no_vio=False,
+                                        contract=None, **kwargs):
     log.info("Generating Prompt for LLM")
     if 'user_obs' in kwargs:
-        pass  # Deprecated — observability is now always inferred via observability_guidance
+        pass  # Deprecated — observability is now always inferred from the contract's rules
 
-    api_list = qemu_base_api_list if no_vio else qemu_api_list
     if no_vio:
         log.info("Ablation mode: --no-vio enabled. VIO APIs stripped from prompt.")
 
@@ -412,9 +205,9 @@ def initial_prompt_gen_multiple_periphs(analysis_dir, model_name, peripherals, o
         analysis_dir=analysis_dir,
         model_name=model_name,
         peripherals=peripherals,
-        qemu_api_list=api_list,
         model_sources=model_sources,
         no_vio=no_vio,
+        contract=contract,
     )
 
     Path(out_dir).mkdir(parents=True, exist_ok=True)
@@ -426,14 +219,14 @@ def initial_prompt_gen_multiple_periphs(analysis_dir, model_name, peripherals, o
 
 
 
-def initial_prompt_gen(analysis_dir, peripheral, out_dir, no_vio=False):
+def initial_prompt_gen(analysis_dir, peripheral, out_dir, no_vio=False, contract=None):
     log.info("Generating Prompt for LLM")
     if no_vio:
         log.info("Ablation mode: --no-vio enabled. VIO APIs stripped from prompt.")
     # Construct the path from the base directory and the peripheral name
     peripheral_path = os.path.join(analysis_dir, peripheral)
 
-    final_prompt = generate_prompt(peripheral_path, no_vio=no_vio)
+    final_prompt = generate_prompt(peripheral_path, no_vio=no_vio, contract=contract)
 
     Path(out_dir).mkdir(parents=True, exist_ok=True)
     output_path = Path(out_dir) / "initial_prompt.txt"
@@ -549,7 +342,7 @@ This file contains information about IRQs.
 
 def iteration_prompt_gen(diff_obj, peripheral, out_dir, device_model_path, show_prompt=True, max_model_chars=120000,
                          no_encoder=False, hardware_log=None, emulation_log=None, peripheral_ranges=None, no_vio=False,
-                         no_rca=False):
+                         no_rca=False, contract=None):
     '''
     Based on the difference object, create a correction prompt using SEARCH/REPLACE
     blocks. This is consistent with the multi-peripheral verifier flow.
@@ -561,6 +354,7 @@ def iteration_prompt_gen(diff_obj, peripheral, out_dir, device_model_path, show_
     platform_name = diff_obj.platform_name
     peripheral_name = peripheral
     device_model = ''
+    contract = _contract(contract)
     if not show_prompt:
         log.warning(
             "show_prompt=False: model source will be hidden from LLM. "
@@ -589,21 +383,7 @@ Take this prompt independent from previous prompt history.
 You are an expert reverse engineer specializing in embedded systems and writing C emulation for peripherals. You have read the reference manual for {platform_name} with special familiarity with {peripheral_name} peripheral.
 Your task is to analyze the following summary of MMIO trace data and generate a complete C device model.
 
-## Available APIs
-You **must** use the following APIs to construct the device model. Pay close attention to the read/write callback signatures.
-```c
-{(qemu_base_api_list if no_vio else qemu_api_list).strip()}
-```
-
-{"" if no_vio else api_missing_note}
-
-{_strip_vio_from_rules(framework_rules) if no_vio else framework_rules}
-
-{"" if no_vio else observability_guidance}
-
-{"" if no_vio else inter_peripheral_guidance}
-
-{"" if no_vio else host_io_section}
+{_render_apis_and_rules(contract, no_vio)}
 
 ## Trace Log Schema:
 The logs below are formatted as arrays containing the following fields: [Operation, Peripheral, Register, Memory Address, Register Value, Program Counter (PC)]. Pay close attention to the Register Value differences between Hardware and the Emulated Model.
@@ -632,35 +412,9 @@ A concise, one-paragraph summary explaining the most likely reason for the misma
 A bulleted list of the important registers mentioned in the traces and their inferred functions.
 
 ### 3. C Device Model Source Code
-The C source code for MMIO read and write callback for {peripheral_name} emulation and any initialization you need for the emulation only. The code must be fully self-contained and ready to be compiled. Including <device.h> and <boardrunner/vio.h> will give you access to all APIs i mentioned.
+The C source code for MMIO read and write callback for {peripheral_name} emulation and any initialization you need for the emulation only. The code must be fully self-contained and ready to be compiled. {_includes_note(no_vio)}
 
-```c
-// Device Model for {peripheral_name}
-
-// Inferred Register Functions:
-// ... add registers here ...
-
-static {peripheral_name}State g_{peripheral_name.lower()};
-
-// This function will emulate all device reads
-uint64_t {peripheral_name.lower()}_read(void *opaque, hwaddr addr, unsigned size) {{
-    {peripheral_name}State *s = ({peripheral_name}State *)opaque;
-    // ... return register value based on offset ...
-}}
-
-// This function will emulate all device writes
-void {peripheral_name.lower()}_write(void *opaque, hwaddr addr, uint64_t value, unsigned size) {{
-    {peripheral_name}State *s = ({peripheral_name}State *)opaque;
-    // ... update register state based on offset and value ...
-}}
-
-// MUST return pointer to state — framework passes it as opaque to _read/_write
-void* {peripheral_name.lower()}_init(ConfigSection* model_info) {{
-    memset(&g_{peripheral_name.lower()}, 0, sizeof(g_{peripheral_name.lower()}));
-    // ... initialize state from model_info (bus inits, etc.) ...
-    return &g_{peripheral_name.lower()};
-}}
-```
+{_model_sketch(peripheral_name, no_vio)}
 '''
     else:
         final_prompt = f'''
@@ -687,23 +441,7 @@ Each SEARCH/REPLACE block MUST begin with a comment identifying its target file:
 
 --- END OF CURRENT MODEL ---
 
-## Available APIs
-You **must** use the following APIs to construct the device model. Pay close attention to the read/write callback signatures.
-```c
-{(qemu_base_api_list if no_vio else qemu_api_list).strip()}
-```
-
-{"" if no_vio else api_missing_note}
-
-{_strip_vio_from_rules(framework_rules) if no_vio else framework_rules}
-
-{"" if no_vio else observability_guidance}
-
-{"" if no_vio else inter_peripheral_guidance}
-
-{slave_bug_blocker}
-
-{"" if no_vio else host_io_section}
+{_render_apis_and_rules(contract, no_vio, extra=(slave_bug_blocker,))}
 
 ## Trace Log Schema:
 The logs below are formatted as arrays containing the following fields: [Operation, Peripheral, Register, Memory Address, Register Value, Program Counter (PC)]. Pay close attention to the Register Value differences between Hardware and the Emulated Model.
@@ -768,13 +506,14 @@ def parse_summary_file(filepath: str) -> Dict[str, str]:
         pass
     return summary_data
 
-def generate_prompt(peripheral_directory: str, no_vio: bool = False) -> str:
+def generate_prompt(peripheral_directory: str, no_vio: bool = False, contract=None) -> str:
     """
     Generates a detailed prompt for an LLM based on analysis files in a directory.
 
     Args:
         peripheral_directory: Path to the analysis directory for the peripheral.
         no_vio: If True, strip VIO APIs from the prompt (ablation mode).
+        contract: The LibVIO model contract (default: load_contract()).
     """
     if not os.path.isdir(peripheral_directory):
         raise FileNotFoundError(
@@ -808,38 +547,18 @@ def generate_prompt(peripheral_directory: str, no_vio: bool = False) -> str:
             loop_data_list.append(f"--- Contents of {os.path.basename(loop_file)} ---\n{read_file_content(loop_file)}")
     loop_data = "\n\n".join(loop_data_list)
 
-    # Select API list based on ablation mode
-    active_api_list = qemu_base_api_list if no_vio else qemu_api_list
-    # When VIO APIs are stripped (A3 ablation), remove all VIO-referencing
-    # guidance so the LLM has no hints about PTY/I2C/SPI/signal APIs.
-    active_api_missing_note = "" if no_vio else api_missing_note
-    active_observability = "" if no_vio else observability_guidance
-    active_inter_periph = "" if no_vio else inter_peripheral_guidance
-    active_host_io = "" if no_vio else host_io_section
-    active_framework_rules = _strip_vio_from_rules(framework_rules) if no_vio else framework_rules
+    # When VIO APIs are stripped (A3 ablation), the contract's LibVIO-only
+    # rules and the VIO guidance go too, so the LLM has no hints about
+    # PTY/I2C/SPI/signal APIs.
+    apis_and_rules = _render_apis_and_rules(_contract(contract), no_vio)
 
-    # Assemble the prompt, escaping literal curly braces {{ and }} in the C code example
     prompt = f"""
 Take this prompt independent from previous prompt history.
 
 You are an expert reverse engineer specializing in embedded systems and writing C emulation for peripherals. You have read the reference manual for {platform_name} with special familiarity with {peripheral_name.lower()} peripheral.
 Your task is to analyze the following summary of MMIO trace data and generate a complete C device model.
 
-## Available APIs
-You **must** use the following APIs to construct the device model. Pay close attention to the read/write callback signatures.
-```c
-{active_api_list.strip()}
-```
-
-{active_api_missing_note}
-
-{active_framework_rules}
-
-{active_observability}
-
-{active_inter_periph}
-
-{active_host_io}
+{apis_and_rules}
 
 --- START OF ANALYSIS DATA ---
 
@@ -900,41 +619,15 @@ A concise, one-paragraph summary of this peripheral's likely purpose and overall
 A bulleted list of the important registers mentioned in the traces and their inferred functions.
 
 ### 3. C Device Model Source Code
-The C source code for MMIO read and write callback for {peripheral_name} emulation and any initialization you need for the emulation only. The code must be fully self-contained and ready to be compiled. Including <device.h> and <boardrunner/vio.h> will give you access to all APIs i mentioned.
+The C source code for MMIO read and write callback for {peripheral_name} emulation and any initialization you need for the emulation only. The code must be fully self-contained and ready to be compiled. {_includes_note(no_vio)}
 
-```c
-// Device Model for {peripheral_name}
-
-// Inferred Register Functions:
-// ... add registers here ...
-
-static {peripheral_name}State g_{peripheral_name.lower()};
-
-// This function will emulate all device reads
-uint64_t {peripheral_name.lower()}_read(void *opaque, hwaddr addr, unsigned size) {{
-    {peripheral_name}State *s = ({peripheral_name}State *)opaque;
-    // ... return register value based on offset ...
-}}
-
-// This function will emulate all device writes
-void {peripheral_name.lower()}_write(void *opaque, hwaddr addr, uint64_t value, unsigned size) {{
-    {peripheral_name}State *s = ({peripheral_name}State *)opaque;
-    // ... update register state based on offset and value ...
-}}
-
-// MUST return pointer to state — framework passes it as opaque to _read/_write
-void* {peripheral_name.lower()}_init(ConfigSection* model_info) {{
-    memset(&g_{peripheral_name.lower()}, 0, sizeof(g_{peripheral_name.lower()}));
-    // ... initialize state from model_info (bus inits, etc.) ...
-    return &g_{peripheral_name.lower()};
-}}
-```
+{_model_sketch(peripheral_name, no_vio)}
 """
     return prompt.strip()
 
 def generate_prompt_no_encoder(hardware_log: str, peripheral_name: str, platform_name: str,
                                peripheral_ranges: list = None, no_vio: bool = False,
-                               model_name: str = None, model_sources=None) -> str:
+                               model_name: str = None, model_sources=None, contract=None) -> str:
     """Generate a prompt using the raw I/O trace instead of the Encoder's compact automaton.
 
     This is the A1 ablation variant. The prompt contains:
@@ -952,6 +645,7 @@ def generate_prompt_no_encoder(hardware_log: str, peripheral_name: str, platform
         no_vio: If True, also strip VIO APIs (combines A1+A3 ablation).
         model_name: Compositional model name from `-mname`; falls back to peripheral_name.
         model_sources: Iterable of peripherals from `-ms`; falls back to [peripheral_name].
+        contract: The LibVIO model contract (default: load_contract()).
     """
     # Read the raw trace, stripping only internal emulator bookkeeping
     # (SysTick IRQ taken/served) that are not MMIO accesses.
@@ -965,12 +659,7 @@ def generate_prompt_no_encoder(hardware_log: str, peripheral_name: str, platform
             lines.append(line.rstrip())
     raw_trace = "\n".join(lines)
 
-    active_api_list = qemu_base_api_list if no_vio else qemu_api_list
-    active_api_missing_note = "" if no_vio else api_missing_note
-    active_observability = "" if no_vio else observability_guidance
-    active_inter_periph = "" if no_vio else inter_peripheral_guidance
-    active_host_io = "" if no_vio else host_io_section
-    active_framework_rules = _strip_vio_from_rules(framework_rules) if no_vio else framework_rules
+    apis_and_rules = _render_apis_and_rules(_contract(contract), no_vio)
 
     effective_model_name = model_name if model_name else peripheral_name
     sources_list = list(model_sources) if model_sources else [peripheral_name]
@@ -982,28 +671,14 @@ Take this prompt independent from previous prompt history.
 You are an expert reverse engineer specializing in embedded systems and writing C emulation for peripherals. You have read the reference manual for {platform_name} with special familiarity with {effective_model_name.lower()} peripheral.
 Your task is to analyze the following raw MMIO I/O trace and generate a complete C device model.
 
-## Available APIs
-You **must** use the following APIs to construct the device model. Pay close attention to the read/write callback signatures.
-```c
-{active_api_list.strip()}
-```
-
-{active_api_missing_note}
-
-{active_framework_rules}
-
-{active_observability}
-
-{active_inter_periph}
-
-{active_host_io}
+{apis_and_rules}
 
 --- START OF RAW I/O TRACE ---
 
 ## Platform:
 {platform_name}
 
-## Model Name (use as the prefix for `_init` / `_read` / `_write`):
+## Model Name (name the model's functions after it):
 {effective_model_name}
 
 ## Peripherals to Model (covered by this single C file):
@@ -1030,35 +705,9 @@ A concise, one-paragraph summary of this peripheral's likely purpose and overall
 A bulleted list of the important registers mentioned in the traces and their inferred functions.
 
 ### 3. C Device Model Source Code
-The C source code for MMIO read and write callback for {effective_model_name} emulation and any initialization you need for the emulation only. The code must be fully self-contained and ready to be compiled. Including <device.h> and <boardrunner/vio.h> will give you access to all APIs i mentioned.
+The C source code for MMIO read and write callback for {effective_model_name} emulation and any initialization you need for the emulation only. The code must be fully self-contained and ready to be compiled. {_includes_note(no_vio)}
 
-```c
-// Device Model for {effective_model_name}
-
-// Inferred Register Functions:
-// ... add registers here ...
-
-static {effective_model_name}State g_{effective_model_name.lower()};
-
-// This function will emulate all device reads
-uint64_t {effective_model_name.lower()}_read(void *opaque, hwaddr addr, unsigned size) {{
-    {effective_model_name}State *s = ({effective_model_name}State *)opaque;
-    // ... return register value based on offset ...
-}}
-
-// This function will emulate all device writes
-void {effective_model_name.lower()}_write(void *opaque, hwaddr addr, uint64_t value, unsigned size) {{
-    {effective_model_name}State *s = ({effective_model_name}State *)opaque;
-    // ... update register state based on offset and value ...
-}}
-
-// MUST return pointer to state — framework passes it as opaque to _read/_write
-void* {effective_model_name.lower()}_init(ConfigSection* model_info) {{
-    memset(&g_{effective_model_name.lower()}, 0, sizeof(g_{effective_model_name.lower()}));
-    // ... initialize state from model_info (bus inits, etc.) ...
-    return &g_{effective_model_name.lower()};
-}}
-```
+{_model_sketch(effective_model_name, no_vio)}
 """
     return prompt.strip()
 
@@ -1096,7 +745,8 @@ def _strip_commented_out_blocks(source: str, min_run: int = 10) -> str:
     return '\n'.join(result)
 
 
-def slave_model_gen(peripheral_name, platform_name, out_dir, slave_firmware_path, reference_model_path, slave_type="i2c"):
+def slave_model_gen(peripheral_name, platform_name, out_dir, slave_firmware_path, reference_model_path, slave_type="i2c",
+                    contract=None):
     '''
     based on the slave firmware code and the existing reference code, generate a C model for the slave.
     '''
@@ -1110,18 +760,22 @@ def slave_model_gen(peripheral_name, platform_name, out_dir, slave_firmware_path
 
     if slave_type == "spi":
         slave_callbacks = """\
-    These are the slave's registered callbacks — the ONLY entry points the framework calls on the slave.
-    Do not rename them or add new registration functions.
-    - `slave_spi_set_cs`
-    - `slave_spi_transfer`
+    These are the slave's functions — the ONLY entry points LibVIO calls on the slave (see "Slave models" above).
+    Their names are fixed. Do not rename them or add new registration functions.
+    - `vio_spi_slave_init`
+    - `vio_spi_slave_set_cs`
+    - `vio_spi_slave_transfer`
+    - `vio_slave_free` (optional)
 """
     else:
         slave_callbacks = """\
-    These are the slave's registered callbacks — the ONLY entry points the framework calls on the slave.
-    Do not rename them or add new registration functions.
-    - `slave_i2c_event`
-    - `slave_i2c_send`
-    - `slave_i2c_receive`
+    These are the slave's functions — the ONLY entry points LibVIO calls on the slave (see "Slave models" above).
+    Their names are fixed. Do not rename them or add new registration functions.
+    - `vio_i2c_slave_init`
+    - `vio_i2c_slave_event`
+    - `vio_i2c_slave_send`
+    - `vio_i2c_slave_recv`
+    - `vio_slave_free` (optional)
 """
 
     slave_gen_prompt = f"""
@@ -1130,22 +784,12 @@ Take this prompt independent from previous prompt history.
 You are an expert reverse engineer specializing in embedded systems and writing C emulation for peripherals. You have read the reference manual for {platform_name} with special familiarity with {peripheral_name.lower()} peripheral.
 Your task is to analyze the following firmware of the {peripheral_name} slave and a reference c model.
 
-## Available APIs
-You **must** use only the following APIs. Pay close attention to signatures.
-```c
-{qemu_api_list.strip()}
-```
+{_render_apis(_contract(contract), no_vio=False, audiences=("model", "slave"))}
 
 {api_missing_note}
 
 ## Slave Callback Interface
 {slave_callbacks}
-
-{framework_rules}
-
-{observability_guidance}
-
-{inter_peripheral_guidance}
 
 {host_io_section}
 
@@ -1158,27 +802,34 @@ You **must** use only the following APIs. Pay close attention to signatures.
 ## Expected Slave Model Structure
 Your generated slave model MUST follow this structural pattern:
 ```c
-// 1. State struct with register array and protocol state
+#include <vio/slave.h>
+#include <stdbool.h>
+#include <stdlib.h>
+
+const int vio_slave_abi = VIO_SLAVE_ABI_VERSION;
+
+// 1. State struct with register array and protocol state: one per slave
+//    instance, returned by init and passed back as ctx (never globals)
 typedef struct {{
     uint8_t regs[256];
     bool    expect_reg_addr;   // I2C: next byte is register pointer
     uint8_t reg_ptr;           // current register pointer
-    bool    inited;
 }} <name>_state_t;
-
-static <name>_state_t g_state;
 
 // 2. Defaults loader (called on init and soft-reset)
 static void load_defaults(<name>_state_t *s) {{ ... }}
 
-// 3. Lazy init guard
-static void lazy_init(void) {{ ... }}
+// 3. Init: create the instance (name and config_json come from the bus config)
+void *vio_i2c_slave_init(const char *name, const char *config_json) {{   // SPI: vio_spi_slave_init
+    <name>_state_t *s = calloc(1, sizeof(*s));
+    if (s) load_defaults(s);
+    return s;
+}}
 
-// 4. The REQUIRED callback symbols (do NOT rename):
-//    I2C: slave_i2c_event, slave_i2c_send, slave_i2c_receive
-//    SPI: slave_spi_set_cs, slave_spi_transfer
-
-// 5. Optional name-based aliases: <name>_send, <name>_receive, etc.
+// 4. The REQUIRED functions (fixed names, each receives ctx first):
+//    I2C: vio_i2c_slave_event, vio_i2c_slave_send, vio_i2c_slave_recv
+//    SPI: vio_spi_slave_set_cs, vio_spi_slave_transfer
+//    Optional: vio_slave_free
 ```
 
 ## Required Output Format
@@ -1190,8 +841,8 @@ A concise, one-paragraph summary of this slave device's purpose and protocol beh
 A bulleted list of the slave's internal registers and their functions, inferred from the firmware and reference model.
 
 ### 3. C Slave Model Source Code
-The complete, self-contained C source file. Including `<device.h>` and `<boardrunner/vio.h>` gives you access to all APIs listed above.
-The code must compile as a shared library (`gcc -shared -fPIC -O2 -o slave.so <file>.c`).
+The complete, self-contained C source file. Including `<vio/slave.h>` gives you the slave interface; `<fastdyn/device_model.h>` and `<vio/vio.h>` give you the other functions listed above.
+The code must compile as a shared library (it is built with `fastdyn build-model`).
 """
 
     Path(out_dir).mkdir(parents=True, exist_ok=True)
@@ -1238,14 +889,14 @@ def _resolve_roles(peripherals, model_name, model_sources=None):
 
     return roles, sources
 
-def generate_prompt_multiple(analysis_dir, model_name, peripherals, qemu_api_list, model_sources, no_vio=False):
+def generate_prompt_multiple(analysis_dir, model_name, peripherals, model_sources, no_vio=False, contract=None):
     """
     Generates a detailed prompt for an LLM based on analysis files in a directory.
     `peripherals` can be a tuple/list (Click multiple=True) or a single string.
 
-    When ``no_vio`` is True, VIO APIs and the VIO-specific framework rules /
-    observability / inter-peripheral / host-I/O guidance sections are stripped
-    so the prompt advertises only base QEMU APIs.
+    When ``no_vio`` is True, VIO APIs, the contract's LibVIO-only rules and
+    the context-peripheral / host-I/O guidance are stripped so the prompt
+    advertises only the emulator's host functions.
     """
     if isinstance(peripherals, str):
         peripherals = [peripherals]
@@ -1341,6 +992,9 @@ def generate_prompt_multiple(analysis_dir, model_name, peripherals, qemu_api_lis
         """)
         blocks.append(block)
 
+    apis_and_rules = _render_apis_and_rules(
+        _contract(contract), no_vio, extra=(() if no_vio else (context_peripheral_instructions,)))
+
     prompt_start = textwrap.dedent(f"""\
     Take this prompt independent from previous prompt history.
 
@@ -1367,23 +1021,7 @@ def generate_prompt_multiple(analysis_dir, model_name, peripherals, qemu_api_lis
     data provides no useful information for modeling `{model_name}`, state that clearly and \
     **ignore** the context peripheral — do not let it block code generation.
 
-    ## Available APIs
-    You **must** use only the following APIs. Pay close attention to signatures.
-    ```c
-    {qemu_api_list.strip()}
-    ```
-
-    {"" if no_vio else api_missing_note}
-
-    {_strip_vio_from_rules(framework_rules) if no_vio else framework_rules}
-
-    {"" if no_vio else observability_guidance}
-
-    {"" if no_vio else inter_peripheral_guidance}
-
-    {"" if no_vio else context_peripheral_instructions}
-
-    {"" if no_vio else host_io_section}
+    {apis_and_rules}
 
     --- START OF ANALYSIS DATA ---
 
@@ -1411,28 +1049,9 @@ def generate_prompt_multiple(analysis_dir, model_name, peripherals, qemu_api_lis
     Bulleted list of important registers and their inferred functions.
 
     ### 3. C Device Model Source Code
-    Self-contained C source for `{model_name}` only. Including `<device.h>` and `<boardrunner/vio.h>` \
-    gives you access to all APIs above.
-    ```c
-    // Device Model for {model_name}
-
-    uint64_t {model_name.lower()}_read(void *opaque, hwaddr addr, unsigned size) {{
-        MyState *s = (MyState *)opaque;  // valid: framework passes return value of _init
-        // ...
-    }}
-
-    void {model_name.lower()}_write(void *opaque, hwaddr addr, uint64_t value, unsigned size) {{
-        MyState *s = (MyState *)opaque;
-        // ...
-    }}
-
-    // MUST return &g_state — framework stores this and passes it as opaque to _read/_write
-    void* {model_name.lower()}_init(ConfigSection* model_info) {{
-        // ...
-        return &g_{model_name.lower()};
-    }}
-    ```
-    """)
+    Self-contained C source for `{model_name}` only. {_includes_note(no_vio)}
+    @@MODEL_SKETCH@@
+    """).replace("@@MODEL_SKETCH@@", _model_sketch(model_name, no_vio))
 
     # Update prompt_start to show composition clearly
     composition_note = textwrap.dedent(f"""\
@@ -1482,31 +1101,6 @@ def _build_compositional_model_source_blocks(model_to_path, show_prompt, max_mod
             f"```"
         )
     return blocks
-
-
-def _render_apis_and_rules(api_list, fw_rules, no_vio):
-    """Assemble the APIs + framework rules + (optional VIO-side guidance) section.
-
-    When ``no_vio`` is True, the VIO-specific guidance blocks (observability,
-    inter-peripheral, host I/O, context-peripheral) are omitted because they
-    reference APIs that are no longer available.
-    """
-    parts = [
-        "## Available APIs",
-        "```c",
-        api_list.strip(),
-        "```",
-        "" if no_vio else api_missing_note,
-        fw_rules,
-    ]
-    if not no_vio:
-        parts.extend([
-            observability_guidance,
-            inter_peripheral_guidance,
-            context_peripheral_instructions,
-            host_io_section,
-        ])
-    return "\n\n".join(p for p in parts if p)
 
 
 def _build_compositional_diff_blocks(peripherals, peripheral_results):
@@ -1710,6 +1304,7 @@ def iteration_prompt_gen_multiple_periph(
     # model is responsible for, enabling per-model independent correction
     # prompts so cross-model orchestration is also ablated.
     model_sources_map=None,
+    contract=None,
 ):
     """
     Generates correction prompts for the compositional multi-model verifier
@@ -1727,8 +1322,8 @@ def iteration_prompt_gen_multiple_periph(
       instead of SEARCH/REPLACE patches and drop the targeted RCA narrative.
       In compositional mode with model_sources_map set, splits into one
       prompt per model so cross-model orchestration is also ablated.
-    - no_vio:     orthogonal lens; strips VIO APIs and VIO-specific framework
-      rules from whichever branch is selected above.
+    - no_vio:     orthogonal lens; strips VIO APIs and the contract's
+      LibVIO-only rules from whichever branch is selected above.
 
     Returns a single path string for joint prompts, or a {mname: path} dict
     when no_rca/no_verifier produce per-model splits.
@@ -1749,9 +1344,8 @@ def iteration_prompt_gen_multiple_periph(
         f"- `{model_name}` → `{os.path.basename(path)}`"
         for model_name, path in model_to_path.items()
     )
-    api_list = qemu_base_api_list if no_vio else qemu_api_list
-    fw_rules = _strip_vio_from_rules(framework_rules) if no_vio else framework_rules
-    apis_and_rules = _render_apis_and_rules(api_list, fw_rules, no_vio)
+    apis_and_rules = _render_apis_and_rules(
+        _contract(contract), no_vio, extra=(() if no_vio else (context_peripheral_instructions,)))
 
     # ── Branch: no_verifier — broken sources + generic "regenerate" message ──
     # In compositional mode, split into per-model independent prompts so the
