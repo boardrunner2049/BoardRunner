@@ -22,11 +22,11 @@ from unittest.mock import patch
 
 import pytest
 
-from boardrunner.viomapper.codegen.prompts.prompt_gen import (
+from boardrunner.viomapper.codegen.prompts.prompt_gen import _render_apis_and_rules
+from boardrunner.viomapper.rca.prompts import (
     _build_compositional_diff_blocks,
     _build_compositional_model_source_blocks,
     _read_trace_strip_systick,
-    _render_apis_and_rules,
     _write_prompt,
     iteration_prompt_gen_multiple_periph,
 )
@@ -294,7 +294,7 @@ class TestCompositionalDefaultBranch:
     ):
         hw, em = cm_paths
         out_dir = tmp_path / "out"
-        with patch("boardrunner.viomapper.codegen.prompts.prompt_gen.verify.verify_automata",
+        with patch("boardrunner.viomapper.rca.prompts.verify.verify_automata",
                    side_effect=_patched_verify({"ADC1": True, "DMA1": False})):
             path = iteration_prompt_gen_multiple_periph(
                 cm_path_hardware=hw,
@@ -317,7 +317,7 @@ class TestCompositionalDefaultBranch:
 
     def test_all_passing_returns_none(self, two_models, cm_paths, tmp_path):
         hw, em = cm_paths
-        with patch("boardrunner.viomapper.codegen.prompts.prompt_gen.verify.verify_automata",
+        with patch("boardrunner.viomapper.rca.prompts.verify.verify_automata",
                    side_effect=_patched_verify({"ADC1": False, "DMA1": False})):
             path = iteration_prompt_gen_multiple_periph(
                 cm_path_hardware=hw,
@@ -331,7 +331,7 @@ class TestCompositionalDefaultBranch:
 
     def test_default_embeds_all_model_sources(self, two_models, cm_paths, tmp_path):
         hw, em = cm_paths
-        with patch("boardrunner.viomapper.codegen.prompts.prompt_gen.verify.verify_automata",
+        with patch("boardrunner.viomapper.rca.prompts.verify.verify_automata",
                    side_effect=_patched_verify({"ADC1": True, "DMA1": True})):
             path = iteration_prompt_gen_multiple_periph(
                 cm_path_hardware=hw,
@@ -384,7 +384,7 @@ class TestCompositionalNoVerifier:
         self, two_models, two_model_sources_map, cm_paths, tmp_path,
     ):
         hw, em = cm_paths
-        with patch("boardrunner.viomapper.codegen.prompts.prompt_gen.verify.verify_automata") as mock_v:
+        with patch("boardrunner.viomapper.rca.prompts.verify.verify_automata") as mock_v:
             iteration_prompt_gen_multiple_periph(
                 cm_path_hardware=hw,
                 cm_path_emulation=em,
@@ -515,7 +515,7 @@ class TestCompositionalNoEncoder:
     ):
         hw, em = cm_paths
         hw_log, _ = io_logs
-        with patch("boardrunner.viomapper.codegen.prompts.prompt_gen.verify.verify_automata") as mock_v:
+        with patch("boardrunner.viomapper.rca.prompts.verify.verify_automata") as mock_v:
             iteration_prompt_gen_multiple_periph(
                 cm_path_hardware=hw,
                 cm_path_emulation=em,
@@ -625,7 +625,7 @@ class TestCompositionalNoRca:
         self, two_models, two_model_sources_map, cm_paths, tmp_path,
     ):
         hw, em = cm_paths
-        with patch("boardrunner.viomapper.codegen.prompts.prompt_gen.verify.verify_automata",
+        with patch("boardrunner.viomapper.rca.prompts.verify.verify_automata",
                    side_effect=_patched_verify({"ADC1": True, "DMA1": True})):
             result = iteration_prompt_gen_multiple_periph(
                 cm_path_hardware=hw,
@@ -644,7 +644,7 @@ class TestCompositionalNoRca:
         self, two_models, two_model_sources_map, cm_paths, tmp_path,
     ):
         hw, em = cm_paths
-        with patch("boardrunner.viomapper.codegen.prompts.prompt_gen.verify.verify_automata",
+        with patch("boardrunner.viomapper.rca.prompts.verify.verify_automata",
                    side_effect=_patched_verify({"ADC1": True, "DMA1": True})):
             result = iteration_prompt_gen_multiple_periph(
                 cm_path_hardware=hw,
@@ -669,7 +669,7 @@ class TestCompositionalNoRca:
         self, two_models, two_model_sources_map, cm_paths, tmp_path,
     ):
         hw, em = cm_paths
-        with patch("boardrunner.viomapper.codegen.prompts.prompt_gen.verify.verify_automata",
+        with patch("boardrunner.viomapper.rca.prompts.verify.verify_automata",
                    side_effect=_patched_verify({"ADC1": True, "DMA1": True})):
             result = iteration_prompt_gen_multiple_periph(
                 cm_path_hardware=hw,
@@ -689,7 +689,7 @@ class TestCompositionalNoRca:
         self, two_models, cm_paths, tmp_path,
     ):
         hw, em = cm_paths
-        with patch("boardrunner.viomapper.codegen.prompts.prompt_gen.verify.verify_automata",
+        with patch("boardrunner.viomapper.rca.prompts.verify.verify_automata",
                    side_effect=_patched_verify({"ADC1": True})):
             with pytest.raises(ValueError, match="model_sources_map"):
                 iteration_prompt_gen_multiple_periph(
@@ -709,7 +709,7 @@ class TestCompositionalNoRca:
         hw, em = cm_paths
         adc_path = tmp_path / "model.c"
         adc_path.write_text("// ADC model\n")
-        with patch("boardrunner.viomapper.codegen.prompts.prompt_gen.verify.verify_automata",
+        with patch("boardrunner.viomapper.rca.prompts.verify.verify_automata",
                    side_effect=_patched_verify({"ADC1": True})):
             result = iteration_prompt_gen_multiple_periph(
                 cm_path_hardware=hw,
@@ -729,7 +729,7 @@ class TestCompositionalNoRca:
         """If a model's peripherals all pass, no prompt is written for that model."""
         hw, em = cm_paths
         # Only ADC1 mismatches; DMA peripherals all pass.
-        with patch("boardrunner.viomapper.codegen.prompts.prompt_gen.verify.verify_automata",
+        with patch("boardrunner.viomapper.rca.prompts.verify.verify_automata",
                    side_effect=_patched_verify({"ADC1": True})):
             result = iteration_prompt_gen_multiple_periph(
                 cm_path_hardware=hw,
@@ -749,7 +749,7 @@ class TestCompositionalNoRca:
     ):
         """If every peripheral passes, no prompts are written and None is returned."""
         hw, em = cm_paths
-        with patch("boardrunner.viomapper.codegen.prompts.prompt_gen.verify.verify_automata",
+        with patch("boardrunner.viomapper.rca.prompts.verify.verify_automata",
                    side_effect=_patched_verify({})):
             result = iteration_prompt_gen_multiple_periph(
                 cm_path_hardware=hw,
@@ -773,7 +773,7 @@ class TestCompositionalNoVio:
 
     def test_no_vio_with_default_branch(self, two_models, cm_paths, tmp_path):
         hw, em = cm_paths
-        with patch("boardrunner.viomapper.codegen.prompts.prompt_gen.verify.verify_automata",
+        with patch("boardrunner.viomapper.rca.prompts.verify.verify_automata",
                    side_effect=_patched_verify({"ADC1": True})):
             path = iteration_prompt_gen_multiple_periph(
                 cm_path_hardware=hw,

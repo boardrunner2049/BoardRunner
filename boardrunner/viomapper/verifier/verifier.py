@@ -1,8 +1,10 @@
-import os, sys
+import os
 import logging
 import re
 from collections import defaultdict
-from typing import Dict
+
+from boardrunner.errors import VerifierError
+from boardrunner.viomapper.encoder.summary import parse_summary_file
 
 log = logging.getLogger(__name__)
 
@@ -36,8 +38,7 @@ def verify_automata(automata1, automata2, peripheral):
     differential_data = DiffLog()
 
     if not os.path.exists(periph_hw):
-        log.error(f"Peripheral {peripheral} does not exist under the {automata1} directory!")
-        sys.exit(0)
+        raise VerifierError(f"peripheral {peripheral} is not in the hardware encoder output {automata1}")
 
     if not os.path.exists(periph_em):
         log.warning(f"Peripheral {peripheral} not in emulation directory. Emulation crashed early.")
@@ -113,20 +114,20 @@ def diff_isr_analysis(diff_data, periph_hw, periph_em):
     isr_sw = parse_irq_file(isr_em_path, periph_hw)
 
     if len(isr_hw) > 0 and len(isr_sw) == 0:
-        log.warn("Hardware fired ISRs, but emulation fired none. Hard mismatch.")
+        log.warning("Hardware fired ISRs, but emulation fired none. Hard mismatch.")
         diff_data.not_match = True
     elif len(isr_hw) == 0 and len(isr_sw) > 0:
-        log.warn("Emulation fired ISRs, but hardware fired none. Hard mismatch.")
+        log.warning("Emulation fired ISRs, but hardware fired none. Hard mismatch.")
         diff_data.not_match = True
     else:
         if len(isr_hw) != len(isr_sw):
-            log.warn(f"Number of ISRs by the emulated device model ({len(isr_sw)}) does not match with the hardware ({len(isr_hw)}) - Warning only (timing artifact expected)")
+            log.warning(f"Number of ISRs by the emulated device model ({len(isr_sw)}) does not match with the hardware ({len(isr_hw)}) - Warning only (timing artifact expected)")
 
         # Compare available iterations but cleanly ignore exact mismatches to prevent infinite LLM retry loops
         min_len = min(len(isr_hw), len(isr_sw))
         for isr_iter in range(min_len):
             if isr_hw[isr_iter] != isr_sw[isr_iter]:
-                log.warn(f"ISR Loop iteration {isr_iter} by the emulated device model does not match exactly with hardware - Warning only")
+                log.warning(f"ISR Loop iteration {isr_iter} by the emulated device model does not match exactly with hardware - Warning only")
 
     # Cap the dumped ISR data so an ISR storm in emulation cannot balloon the
     # revised prompt past the LLM's per-message size limit. The encoder already
@@ -171,11 +172,11 @@ def diff_runtime_trace_analysis(diff_data, periph_hw, periph_em):
     state_em = parse_runtime_trace(state_em_path, periph_em, diff_data.data_registers)
 
     if len(state_hw) != len(state_em):
-        log.warn("Number of data accesses by the emulated device model does not match with the hardware")
+        log.warning("Number of data accesses by the emulated device model does not match with the hardware")
     else:
         for i in range(len(state_hw)):
             if state_hw[i] != state_em[i]:
-                log.warn(f"Hardware access {state_hw[i]} does not match with the emulated device model access {state_em[i]}")
+                log.warning(f"Hardware access {state_hw[i]} does not match with the emulated device model access {state_em[i]}")
 
     read_seq_section = _build_read_sequence_section(state_hw_path, state_em_path)
 
@@ -242,7 +243,7 @@ def diff_stateful_analysis(diff_data, periph_hw, periph_em):
     rmw_em, wp_em = parse_state_file(state_em_path, periph_em)
 
     if rmw_hw != rmw_em:
-        log.warn(f"Number of RMW pattern registers do not match in the emulated model with the hardware")
+        log.warning(f"Number of RMW pattern registers do not match in the emulated model with the hardware")
 
     # Format Write-Poll pairs as human-readable strings
     wp_hw_str = ', '.join(f'Polling Loop on {dst} (preceded by write to {src})' for src, dst in wp_hw) if wp_hw else 'None detected'
@@ -276,7 +277,7 @@ def diff_loop_pattern(diff_data, periph_hw, periph_em):
     loop_pattern_files_em = [f for f in os.listdir(periph_em) if f.startswith('loop_pattern')]
 
     if len(loop_pattern_files_hw) != len(loop_pattern_files_em):
-        log.warn("Number of loop pattern files by the hardware does not match with the emulator")
+        log.warning("Number of loop pattern files by the hardware does not match with the emulator")
     else:
         diff_data.diff_loop_pattern_data = ''
         for index, file in enumerate(loop_pattern_files_hw):  #the file name will be same for both the em and hw
@@ -287,11 +288,11 @@ def diff_loop_pattern(diff_data, periph_hw, periph_em):
             loop_pattern_em = parse_loop_pattern_file(curr_loop_em, periph_em, diff_data.data_registers)
 
             if len(loop_pattern_hw) != len(loop_pattern_em):
-                log.warn(f"Size of the loop pattern for hardware does not match with emulator for file {loop_pattern_hw}")
+                log.warning(f"Size of the loop pattern for hardware does not match with emulator for file {loop_pattern_hw}")
             else:
                 for i in range(len(loop_pattern_hw)):
                     if loop_pattern_hw[i] != loop_pattern_em[i]:
-                        log.warn(f'Access {loop_pattern_em[i]} by the emulated model does not match with the hardware access {loop_pattern_hw[i]}')
+                        log.warning(f'Access {loop_pattern_em[i]} by the emulated model does not match with the hardware access {loop_pattern_hw[i]}')
                         diff_data.not_match = True
 
             diff_data.diff_loop_pattern_data += f'''
@@ -432,7 +433,7 @@ def diff_entropy_calculate(diff_data, periph_hw, periph_em):
     warnings_str = '\n'.join(entropy_warnings) if entropy_warnings else '    No significant entropy mismatches.'
 
     for w in entropy_warnings:
-        log.warn(f"Entropy mismatch: {w.strip()}")
+        log.warning(f"Entropy mismatch: {w.strip()}")
 
     # Store raw data for prompt_gen.py to format with LLM-specific instructions
     diff_data.raw_entropy = {
@@ -462,14 +463,14 @@ def diff_init_pattern(diff_data, periph_hw, periph_em):
     init_em = parse_init_file(init_em_path, periph_em, diff_data.data_registers)
 
     if len(init_hw) != len(init_em):
-        log.warn("Number of access for the initialization by the emulated model does not match with the hardware")
+        log.warning("Number of access for the initialization by the emulated model does not match with the hardware")
         diff_data.not_match = True
     else:
         for i in range(len(init_hw)):
             if init_hw[i] == init_em[i]:
                 continue
             else:
-                log.warn(f"Access {init_em[i]} by the emulated model does not match with the hardware access {init_hw[i]}")
+                log.warning(f"Access {init_em[i]} by the emulated model does not match with the hardware access {init_hw[i]}")
                 diff_data.not_match = True
 
     #collecting the init data in case we need in future
@@ -663,19 +664,3 @@ def parse_runtime_trace(path, periph_name, data_registers):
                     runtime_trace_data.append([access_type, peripheral, register, address, value, pc])
 
     return runtime_trace_data
-
-def parse_summary_file(filepath: str) -> Dict[str, str]:
-    """Parses the key-value pairs from the summary.txt file, cleaning prefixes like '-'."""
-    summary_data = {}
-    if not os.path.exists(filepath):
-        return summary_data
-    try:
-        with open(filepath, 'r') as f:
-            for line in f:
-                if ":" in line:
-                    key, value = line.split(":", 1)
-                    key = key.strip().lstrip("-").strip()  # remove leading '-' and spaces
-                    summary_data[key] = value.strip()
-    except Exception:
-        pass
-    return summary_data

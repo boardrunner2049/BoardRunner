@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
+from boardrunner.errors import BoardRunnerError
+
 CONTRACT_DIR_ENV = "VIO_CONTRACT_DIR"
 
 # The contract versions these prompts are written for: the VIO and audience
@@ -32,7 +34,7 @@ _COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
 _AUDIENCE = re.compile(r"^<!-- for: (\w+) -->$", re.MULTILINE)
 
 
-class ContractError(Exception):
+class ContractError(BoardRunnerError):
     """The contract cannot be found or read, or is not one these prompts support."""
 
 

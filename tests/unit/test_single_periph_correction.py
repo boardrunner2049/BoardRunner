@@ -20,7 +20,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from boardrunner.viomapper.codegen.prompts.prompt_gen import (
+from boardrunner.viomapper.rca.prompts import (
     iteration_prompt_gen,
 )
 

@@ -50,45 +50,71 @@ they use a small copy of the contract in `tests/fixtures/contract`.
 ## Usage
 
 Until the `boardrunner` executable is installed (it comes with the examples),
-run the command as a module:
+run the command as a module. There is one command per VIOMapper stage of
+the paper (Fig. 7):
 
 ```bash
-python -m boardrunner --help
-python -m boardrunner generate ...       # build the LLM prompt from a hardware trace
-python -m boardrunner llm -d WORK -o model.c   # send it and write or patch the model
-python -m boardrunner verifier ...       # compare the model with the hardware trace
-python -m boardrunner build-models ...   # FastDyn's model builder
-python -m boardrunner run -c board.toml  # FastDyn's runner
+python -m boardrunner encode  -hw io.trace -b STM32F103xx -o work          # Encoder: trace -> work/out_cm
+python -m boardrunner codegen -d work -p USART2 -o usart2.c --compile      # CodeGen: prompt -> LLM -> model
+python -m boardrunner run -c board.toml                                     # run the firmware (FastDyn)
+python -m boardrunner verify  -hw io.trace -em io.log -p USART2 \
+                              -d USART2:usart2.c -b STM32F103xx -o work     # Verifier: exit 0 match, 1 mismatch
+python -m boardrunner rca     -d work                                       # RCA: -> work/revised_prompt.txt
+python -m boardrunner codegen -d work -o usart2.c --compile                 # next round: patch the model
 ```
 
+`encode` runs once per hardware trace; then `codegen` -> `run` -> `verify` ->
+`rca` repeat until `verify` reports a match. `codegen` sends the work
+directory's `revised_prompt.txt` (from `rca`) if there is one, else its
+`initial_prompt.txt`, and builds the initial prompt from the encoder output
+when neither exists; `codegen --prompt-only` writes the initial prompt and
+stops, to read or edit it first. Several peripherals in one model take
+`-p` per peripheral with `-mname` (and `-ms` for the source peripherals);
+a slave model on an SPI or I2C bus takes `codegen -sm -rm REF.c -fc
+FIRMWARE.c`.
+
+Each command replaces only its own output in the work directory
+(`out_cm/`, `verify/`, the prompt files); `--clean` on `encode` and
+`verify` deletes the whole directory first. LLM prompts and answers are kept
+in `fastdyn_llm_history/` next to it. `codegen` asks before sending a
+follow-up after a failed parse, patch or compile; `--yes` retries without
+asking, up to `--max-retries`.
+
+The ablation study's variants (Table 9) are switches: `--no-encoder`
+(`codegen`, `rca`), `--no-vio` (`codegen`, `rca`), `--no-rca` and
+`--no-verifier` (`rca`).
+
 `-v`, `-q`, `--log-level [LOGGER=]LEVEL` and `--log-file` work as in
-FastDyn and cover both the `boardrunner.*` and `fastdyn.*` loggers. The
-`llm` command needs `OPENAI_API_KEY` (or `--env-file`) for OpenAI, or
-`--model-provider ollama`.
+FastDyn and cover both the `boardrunner.*` and `fastdyn.*` loggers. Errors
+end with exit status 2. `codegen` needs `OPENAI_API_KEY` (or `--env-file`)
+for OpenAI, or `--model-provider ollama`.
 
 The prompts take the rules a model follows, the LibVIO API and the
 emulator's host functions from LibVIO's model contract, found with
-`pkg-config --variable=contractdir vio`; `generate` and `verifier` accept
+`pkg-config --variable=contractdir vio`; `codegen` and `rca` accept
 `--contract-dir PATH` (or `$VIO_CONTRACT_DIR`) instead. Generated models use
 FastDyn's model interface (`<fastdyn/device_model.h>`, ABI v2) and LibVIO v1;
-`llm --compile` builds them with FastDyn's model builder into `--build-dir`
-(default `build/models`) and sends compiler errors back to the LLM. The command names are the ones FastDyn used; they
-change to the VIOMapper stages later.
+`codegen --compile` builds them with FastDyn's model builder into
+`--build-dir` (default `build/models`) and sends compiler errors back to
+the LLM.
 
 ## Layout
 
 ```
 deps/fastdyn/        FastDyn, pinned
 boardrunner/
-  cli.py             the boardrunner command
+  cli.py             the boardrunner command (one subcommand per stage)
+  errors.py          the errors a stage raises
   hitl/              trace capture on the board through FastDyn
   viomapper/
-    encoder/         context minimizer (trace -> per-peripheral context)
-    codegen/         prompts/, llm/ clients, response parsing, patching, compiling
-    verifier/        model verification against the trace (still includes RCA)
-    rca/             RCA, once it is split out of verifier/
+    encoder/         context minimizer (encode.py: the stage)
+    codegen/         initial prompts, LLM clients, parsing, patching, compiling
+                     (prompt.py and synthesize.py: the stage)
+    verifier/        trace comparison (verify.py: the stage)
+    rca/             revision prompts from the Verifier's results (rca.py: the stage)
+    ablations.py     the ablation study's switches
 tests/
 ```
 
-Still to come: trace capture, `models/` (learned models), `examples/`
+Still to come: trace capture, the automatic loop (`boardrunner pipeline`), `models/` (learned models), `examples/`
 (firmware and board configurations), `evaluation/`, `docs/` and `docker/`.

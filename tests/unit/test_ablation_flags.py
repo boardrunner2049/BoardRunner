@@ -169,78 +169,8 @@ class TestNoVioInFullPipeline:
         assert "Register Entropy Analysis" in prompt
 
 
-# ---------------------------------------------------------------------------
-# --no-rca behavior (on verifier command)
-# ---------------------------------------------------------------------------
-
-class TestNoRca:
-    """Tests for the --no-rca ablation flag on the verifier command.
-
-    When --no-rca is set on the verifier, it should write a generic
-    revised_prompt.txt (initial prompt + generic retry message) instead
-    of the targeted RCA-based correction prompt.
-    """
-
-    def test_generic_prompt_contains_original_plus_retry(self, tmp_path):
-        """--no-rca should produce: original prompt + generic correction message."""
-        original_prompt = "Generate a model for UART0 on Max78000.\n"
-
-        # Simulate the --no-rca logic from main.py verifier command
-        generic_prompt = (
-            original_prompt +
-            "\n\n## Correction Required\n"
-            "The previously generated model failed verification against the hardware trace. "
-            "Please review the trace data above carefully and generate a corrected model "
-            "that faithfully reproduces the observed hardware behavior.\n"
-        )
-
-        revised_path = tmp_path / "revised_prompt.txt"
-        revised_path.write_text(generic_prompt)
-
-        content = revised_path.read_text()
-        # Contains the original prompt
-        assert "Generate a model for UART0" in content
-        # Contains the generic retry message
-        assert "Correction Required" in content
-        assert "failed verification" in content
-
-    def test_generic_prompt_has_no_rca_specifics(self, tmp_path):
-        """--no-rca prompt should NOT contain RCA-specific diagnostics."""
-        original_prompt = "Generate a model for UART0.\n"
-        rca_content = "Entropy mismatch: SR hardware=1.0, emulated=0.0"
-
-        generic_prompt = (
-            original_prompt +
-            "\n\n## Correction Required\n"
-            "The previously generated model failed verification against the hardware trace. "
-            "Please review the trace data above carefully and generate a corrected model "
-            "that faithfully reproduces the observed hardware behavior.\n"
-        )
-
-        # The generic prompt should not contain any RCA-specific analysis
-        assert rca_content not in generic_prompt
-        assert "Entropy mismatch" not in generic_prompt
-        assert "SEARCH/REPLACE" not in generic_prompt
-
-    def test_normal_mode_uses_rca(self):
-        """Without --no-rca, the verifier generates targeted RCA prompts (not generic)."""
-        # This is a design-level test: the normal flow calls pg.iteration_prompt_gen()
-        # which produces detailed mismatch analysis, not a generic message.
-        # We verify the distinction by checking the no_rca flag logic.
-        no_rca = False
-        not_match = True
-
-        # In normal mode, RCA path is taken
-        used_rca = not_match and not no_rca
-        assert used_rca is True
-
-    def test_no_rca_flag_skips_rca(self):
-        """With --no-rca, the verifier skips RCA prompt generation."""
-        no_rca = True
-        not_match = True
-
-        used_rca = not_match and not no_rca
-        assert used_rca is False
+# --no-rca, --no-verifier and --no-encoder on the rca command: see
+# test_cli_stages.py (test_rca_ablations_*), which runs them on a real trace.
 
 
 # ---------------------------------------------------------------------------

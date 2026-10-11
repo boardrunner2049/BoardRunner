@@ -2,7 +2,6 @@ import glob
 import logging
 import os
 import re
-import sys
 import subprocess
 import math
 from collections import Counter, defaultdict
@@ -14,6 +13,8 @@ from scipy.stats import entropy as calculate_entropy
 from cmsis_svd.parser import SVDParser
 
 from fastdyn.utils import parse_config as svd_parser
+
+from boardrunner.errors import EncoderError
 
 log = logging.getLogger(__name__)
 
@@ -269,7 +270,7 @@ class MMIOAnalyzer:
             self.device = svd_device
             self._build_peripheral_map()
         except FileNotFoundError:
-            log.error(f"SVD Device not correctly passed to context minimizer"); sys.exit(1)
+            raise EncoderError("the SVD device was not passed to the encoder")
 
     def _build_peripheral_map(self):
         self.peripheral_map = {}
@@ -368,7 +369,7 @@ class MMIOAnalyzer:
                     )
                     enriched_accesses.append(access)
         except FileNotFoundError:
-            log.error(f"Log file not found at '{log_path}'"); sys.exit(1)
+            raise EncoderError(f"trace file not found: {log_path}")
         if unmapped_addresses:
             total = sum(unmapped_addresses.values())
             examples = ", ".join(

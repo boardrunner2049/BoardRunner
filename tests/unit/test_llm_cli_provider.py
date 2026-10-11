@@ -26,7 +26,7 @@ def test_llm_cli_ollama_provider_does_not_require_openai_key(tmp_path, monkeypat
         result = CliRunner().invoke(
             cli,
             [
-                "llm",
+                "codegen",
                 "-d",
                 str(work_dir),
                 "-o",
