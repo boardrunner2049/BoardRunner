@@ -1,7 +1,8 @@
 """The stage commands (encode, codegen, verify, rca) on a real trace excerpt.
 
-tests/fixtures/f103rb_uart holds 600 USART2 accesses of the NUCLEO-F103RB
-UART example's hardware trace and the USART part of the STM32F103xx SVD.
+tests/fixtures/f103rb_uart holds the first 600 USART2 accesses (and the 7
+GPIOA accesses among them) of the NUCLEO-F103RB UART example's hardware
+trace, and the GPIOA and USART part of the STM32F103xx SVD.
 """
 
 import json
@@ -113,8 +114,6 @@ def test_codegen_says_what_the_prompt_is_missing(tmp_path, args, message):
 
 
 def test_a_composed_model_needs_a_name(encoded):
-    (encoded / "out_cm" / "GPIOA").mkdir()
-
     result = _run("codegen", "-d", encoded, "-p", "USART2", "-p", "GPIOA", "--prompt-only")
 
     assert result.exit_code == 2
@@ -140,7 +139,7 @@ def test_verify_reports_an_unknown_peripheral(tmp_path, model):
                   *SVD_ARGS, "-o", tmp_path / "work")
 
     assert result.exit_code == 2
-    assert "peripheral(s) UART4 not in the hardware trace; it has: USART2" in result.output
+    assert "peripheral(s) UART4 not in the hardware trace; it has: GPIOA, USART2" in result.output
 
 
 def test_verify_checks_the_model_list(tmp_path, model):

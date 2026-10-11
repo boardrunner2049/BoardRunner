@@ -34,8 +34,11 @@ class SlaveSources:
 def write_initial_prompt(work_dir, *, peripherals: Sequence[str], model_name: Optional[str] = None,
                          model_sources: Sequence[str] = (), board: Optional[str] = None,
                          no_vio=False, no_encoder=False, hardware_log=None,
-                         slave: Optional[SlaveSources] = None, contract=None):
+                         slave: Optional[SlaveSources] = None, contract=None, encoder_dir=None):
     """Write ``<work_dir>/initial_prompt.txt`` and return its path.
+
+    The encoder output is ``<work_dir>/out_cm`` unless ``encoder_dir`` says
+    otherwise (the pipeline writes one prompt folder per model).
 
     A ``revised_prompt.txt`` left from an earlier round is removed, so the
     next LLM call uses this prompt.
@@ -78,7 +81,7 @@ def write_initial_prompt(work_dir, *, peripherals: Sequence[str], model_name: Op
         path.write_text(prompt + "\n", encoding="utf-8")
         log.info("Ablation prompt (no encoder) written to %s", path)
     else:
-        encoder_dir = work_dir / ENCODER_DIR
+        encoder_dir = Path(encoder_dir) if encoder_dir else work_dir / ENCODER_DIR
         if not encoder_dir.is_dir():
             raise CodegenError(f"no encoder output in {encoder_dir}: run `boardrunner encode` first "
                                "(or pass --no-encoder)")

@@ -113,8 +113,9 @@ boardrunner/
     verifier/        trace comparison (verify.py: the stage)
     rca/             revision prompts from the Verifier's results (rca.py: the stage)
     ablations.py     the ablation study's switches
+    pipeline.py      the automatic loop over the stages (run step passed in)
 tests/
 ```
 
-Still to come: trace capture, the automatic loop (`boardrunner pipeline`), `models/` (learned models), `examples/`
+Still to come: trace capture, the `boardrunner pipeline` command (the loop with a real run step), `models/` (learned models), `examples/`
 (firmware and board configurations), `evaluation/`, `docs/` and `docker/`.
