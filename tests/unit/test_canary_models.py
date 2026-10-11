@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-EXAMPLES = Path(__file__).resolve().parents[2] / "examples" / "nucleo_f103rb"
+EXAMPLES = Path(__file__).resolve().parents[2] / "examples" / "nucleo_f103rb" / "full"
 MODELS = sorted(EXAMPLES.glob("*/generated_models/*.c"))
 SLAVES = {"bme280_i2c_slave.c", "bme280_slave.c"}
 WORKLOADS = ["ADC_with_DMA", "GPIO_with_GPIO_INT", "I2C", "PWM", "SPI", "TIMER", "UART"]

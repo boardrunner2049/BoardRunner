@@ -1,0 +1,27 @@
+# Host state and build products; the image builds everything itself
+**/.git
+**/.venv
+**/__pycache__
+**/*.pyc
+*.egg-info
+**/*.egg-info
+**/fastdyn_work*
+**/fastdyn_llm_history*
+examples/**/build
+examples/**/build_learned
+examples/**/work
+deps/fastdyn/build
+deps/fastdyn/fastdyn-env
+deps/fastdyn/*.log
+deps/fastdyn/third_party/common/qemu/build
+deps/fastdyn/third_party/common/libhw/out
+deps/fastdyn/virtuals/fuzzer/fastdyn_fuzz_lib/target
+
+# FastDyn submodules the image does not use. Of the SVD collection it needs
+# one file.
+deps/fastdyn/third_party/courbet_deps
+deps/fastdyn/third_party/common/modelica_models
+deps/fastdyn/third_party/common/rumoca
+deps/fastdyn/third_party/common/cmsis-svd-data
+!deps/fastdyn/third_party/common/cmsis-svd-data/data/STMicro/STM32F103xx.svd
+deps/fastdyn/virtuals/physics/flight_controllers

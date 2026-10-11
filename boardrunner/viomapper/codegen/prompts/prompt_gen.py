@@ -526,7 +526,7 @@ A bulleted list of the slave's internal registers and their functions, inferred 
 
 ### 3. C Slave Model Source Code
 The complete, self-contained C source file. Including `<vio/slave.h>` gives you the slave interface; `<fastdyn/device_model.h>` and `<vio/vio.h>` give you the other functions listed above.
-The code must compile as a shared library (it is built with `fastdyn build-model`).
+The code must compile as a shared library.
 """
 
     Path(out_dir).mkdir(parents=True, exist_ok=True)

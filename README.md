@@ -37,20 +37,23 @@ they use a small copy of the contract in `tests/fixtures/contract`.
 
 ## Usage
 
-Run the command as `python -m boardrunner`. There is one command per
-VIOMapper stage of the paper (Fig. 7):
+The command is `boardrunner` (or `python -m boardrunner`). There is one
+command per VIOMapper stage of the paper (Fig. 7):
 
 ```bash
-python -m boardrunner trace   -c passthrough.toml -o io.trace --seconds 20 \
-                              --stimulus ./type_chars.sh                    # record the hardware trace (board)
-python -m boardrunner encode  -hw io.trace -b STM32F103xx -o work          # Encoder: trace -> work/out_cm
-python -m boardrunner codegen -d work -p USART2 -o usart2.c --compile      # CodeGen: prompt -> LLM -> model
-python -m boardrunner run -c board.toml                                     # run the firmware (FastDyn)
-python -m boardrunner verify  -hw io.trace -em io.log -p USART2 \
-                              -d USART2:usart2.c -b STM32F103xx -o work     # Verifier: exit 0 match, 1 mismatch
-python -m boardrunner rca     -d work                                       # RCA: -> work/revised_prompt.txt
-python -m boardrunner codegen -d work -o usart2.c --compile                 # next round: patch the model
+boardrunner trace   -c passthrough.toml -o io.trace --seconds 20 \
+                    --stimulus ./type_chars.sh                       # record the hardware trace (board)
+boardrunner encode  -hw io.trace -b STM32F103xx -o work              # Encoder: trace -> work/out_cm
+boardrunner codegen -d work -p USART2 -o usart2.c --compile          # CodeGen: prompt -> LLM -> model
+boardrunner run     -c board.toml                                    # run the firmware (FastDyn)
+boardrunner verify  -hw io.trace -em io.log -p USART2 \
+                    -d USART2:usart2.c -b STM32F103xx -o work        # Verifier: exit 0 match, 1 mismatch
+boardrunner rca     -d work                                          # RCA: -> work/revised_prompt.txt
+boardrunner codegen -d work -o usart2.c --compile                    # next round: patch the model
 ```
+
+`run` and `build-models` are FastDyn's: `run` runs a platform configuration,
+`build-models DIR -o BUILD` compiles the models in `DIR` (one `.so` each).
 
 `trace` runs the firmware with its peripherals on the real board (a
 FastDyn passthrough configuration) and saves the MMIO trace; `--stimulus`
@@ -62,8 +65,8 @@ stopped at the end. `encode` runs once per hardware trace; then `codegen` ->
 `pipeline` does all of that automatically:
 
 ```bash
-python -m boardrunner pipeline -hw io.trace -c board.toml -p USART2 -o usart2.c \
-       -b STM32F103xx --seconds 15 --stimulus ./type_chars.sh -d work
+boardrunner pipeline -hw io.trace -c board.toml -p USART2 -o usart2.c \
+    -b STM32F103xx --seconds 15 --stimulus ./type_chars.sh -d work
 ```
 
 Each round compiles the model into `--build-dir`, runs `board.toml` on
@@ -106,6 +109,16 @@ FastDyn's model interface (`<fastdyn/device_model.h>`, ABI v2) and LibVIO v1;
 `--build-dir` (default `build/models`) and sends compiler errors back to
 the LLM.
 
+## Examples and evaluation
+
+`examples/nucleo_f103rb/full/` has seven NUCLEO-F103RB workloads whose
+peripherals are all learned models: firmware, models, hardware trace and
+configuration, with build and run commands in each README. Each board's
+`idle_firmware/` holds the firmware the board runs while `trace` forwards
+peripheral accesses to it, with a `flash.sh` for that board.
+`evaluation/nucleo_f103rb/` reproduces the paper's Tables 6 and 7 on them,
+natively or in the Docker image built by the `Dockerfile` (see its README).
+
 ## Layout
 
 ```
@@ -123,7 +136,11 @@ boardrunner/
     rca/             revision prompts from the Verifier's results (rca.py: the stage)
     ablations.py     the ablation study's switches
     pipeline.py      the automatic loop over the stages, and its FastDyn run step
-examples/
-  nucleo_f103rb/     learned models of seven NUCLEO-F103RB workloads
+examples/<board>/
+  idle_firmware/     what the board runs during hardware-in-the-loop runs, and its flash.sh
+  full/              workloads whose peripherals are all learned models (nucleo_f103rb: seven)
+evaluation/
+  nucleo_f103rb/     run.sh: Tables 6 and 7 (configs, replay tapes and results in table6/)
 tests/
+Dockerfile           image with QEMU, FastDyn, libhw, LibVIO and BoardRunner; runs evaluation/nucleo_f103rb/run.sh
 ```
