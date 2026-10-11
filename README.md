@@ -6,26 +6,14 @@ peripheral from that trace (VIOMapper: Encoder, CodeGen, Verifier, RCA), and
 then runs the firmware without the board, on [FastDyn](deps/fastdyn) with the
 learned models and [LibVIO](https://github.com/PSecLab/LibVIO).
 
-> **Status:** BoardRunner is being moved out of the FastDyn repository into
-> this one. The VIOMapper code, trace capture and the `boardrunner` command
-> are here; the examples and evaluation follow.
+## Paper
 
-## The paper version
+BoardRunner is described in our CCS'26 paper. The version evaluated there is
+tagged `v1.0-ccs26`; artifact DOI: **TODO(DOI)**.
 
-The version evaluated in the CCS'26 paper is FastDyn's `boardrunner/` tree
-at the FastDyn tag `ccs26-artifact`. The first `main` commit of this
-repository will be that snapshot (tag `v1.0-ccs26`), with the artifact
-DOI: **TODO(DOI)**. Later commits restructure the code; models generated on
-them may be deprecated until they are migrated to FastDyn's device model
-interface (ABI v2) and LibVIO v1.
+## Setup
 
-TODO: migrate all generated models once the model interface and the LibVIO
-contract are stable (the hardware-free F103RB examples are migrated first).
-
-## Development setup
-
-FastDyn is a submodule in `deps/fastdyn`. During development it points at a
-local FastDyn checkout, so initialising it needs file transport allowed:
+FastDyn is a submodule in `deps/fastdyn`:
 
 ```bash
 git -c protocol.file.allow=always submodule update --init deps/fastdyn
@@ -49,9 +37,8 @@ they use a small copy of the contract in `tests/fixtures/contract`.
 
 ## Usage
 
-Until the `boardrunner` executable is installed (it comes with the examples),
-run the command as a module. There is one command per VIOMapper stage of
-the paper (Fig. 7):
+Run the command as `python -m boardrunner`. There is one command per
+VIOMapper stage of the paper (Fig. 7):
 
 ```bash
 python -m boardrunner trace   -c passthrough.toml -o io.trace --seconds 20 \
@@ -136,8 +123,7 @@ boardrunner/
     rca/             revision prompts from the Verifier's results (rca.py: the stage)
     ablations.py     the ablation study's switches
     pipeline.py      the automatic loop over the stages, and its FastDyn run step
+examples/
+  nucleo_f103rb/     learned models of seven NUCLEO-F103RB workloads
 tests/
 ```
-
-Still to come: `models/` (learned models), `examples/`
-(firmware and board configurations), `evaluation/`, `docs/` and `docker/`.
