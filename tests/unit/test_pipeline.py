@@ -206,3 +206,50 @@ def test_several_models_get_their_own_first_prompt_and_a_joint_correction(setup,
     assert "`usart2.c`" in llm.prompts[2] and "`gpioa.c`" in llm.prompts[2]
     assert "[MISMATCH]" in llm.prompts[2] and "[PASSING]" in llm.prompts[2]
     assert "0x200Cu" in usart.read_text() and "0x000Cu" in other.read_text()
+
+
+def test_the_pipeline_command(tmp_path, monkeypatch):
+    """`boardrunner pipeline` end to end; FastDyn's run, the compiler and the LLM are stand-ins."""
+    from types import SimpleNamespace
+
+    from click.testing import CliRunner
+
+    import fastdyn
+    from boardrunner.cli import cli
+    from boardrunner.viomapper.codegen import compile as compile_module
+    from boardrunner.viomapper.codegen import synthesize as synthesize_module
+
+    llm, mismatch, built, runs = ScriptedLlm(), _trace_with_cr1(tmp_path, 0xC), [], []
+
+    def fake_build(sources, out_dir, **kwargs):
+        for source in sources:
+            (Path(out_dir) / (Path(source).stem + ".so")).parent.mkdir(parents=True, exist_ok=True)
+            (Path(out_dir) / (Path(source).stem + ".so")).write_bytes(b"")
+            built.append(Path(source).name)
+        return SimpleNamespace(ok=True, results=[])
+
+    def fake_run(config, work_dir, *, svd=None, adjust=None):
+        device = SimpleNamespace(handlers=[SimpleNamespace(model="elder", enabled=True, scroll=None)])
+        handle = SimpleNamespace(machines={"m": SimpleNamespace(devices={"usart2": device})}, shutdown=lambda: None)
+        adjust(handle)
+        runs.append(device.handlers[0].scroll)
+        Path(work_dir).mkdir(parents=True, exist_ok=True)
+        trace = mismatch if Path(work_dir).name == "round_1" else TRACE
+        (Path(work_dir) / "io.log").write_text(trace.read_text())
+        return [SimpleNamespace(exit_code=0)]
+
+    monkeypatch.setattr(synthesize_module, "make_client", lambda settings: llm)
+    monkeypatch.setattr(compile_module, "build_models", fake_build)
+    monkeypatch.setattr(fastdyn, "run_config", fake_run)
+    config = tmp_path / "board.toml"
+    config.write_text('[Machine]\nqmp_socket = "/tmp/boardrunner-test.sock"\n')
+
+    result = CliRunner().invoke(cli, [
+        "pipeline", "-hw", str(TRACE), "-c", str(config), "-d", str(tmp_path / "work"),
+        "-p", "USART2", "-o", str(tmp_path / "usart2.c"), "-b", "STM32F103xx",
+        "-s", str(FIXTURE / "STM32F103xx.svd"), "--seconds", "1", "--build-dir", str(tmp_path / "build")])
+
+    assert result.exit_code == 0, result.output
+    assert built == ["usart2.c", "usart2.c"] and runs == [str(tmp_path / "build" / "usart2.so")] * 2
+    assert "#define CR1_WRITABLE 0x200Cu" in (tmp_path / "usart2.c").read_text()
+    assert json.loads((tmp_path / "work" / "pipeline.json").read_text())["match"]

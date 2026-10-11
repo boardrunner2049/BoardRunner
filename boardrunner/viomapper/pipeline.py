@@ -170,3 +170,28 @@ def run_pipeline(hardware_log, work_dir, *, models: Sequence[ModelSpec], svd, ru
 
     result.save()
     return result
+
+
+def firmware_run_step(config, *, seconds, stimulus=None, devices: Optional[Dict[str, str]] = None, svd=None):
+    """A :data:`RunStep` that runs ``config`` on FastDyn with the round's models.
+
+    Each model is loaded by the device of the same name in lower case
+    (``USART2`` -> ``[Device.usart2]``) unless ``devices`` maps it to another;
+    its library is ``<build_dir>/<source stem>.so``, where CodeGen's compile
+    step put it. Each round runs in ``<work>/runs/round_<N>``.
+    """
+    from boardrunner.firmware import run_firmware
+
+    devices = dict(devices or {})
+
+    def step(request: RunRequest) -> str:
+        scrolls = {devices.get(name, name.lower()): str(Path(request.build_dir) / (Path(source).stem + ".so"))
+                   for name, source in request.models.items()}
+        missing = [path for path in scrolls.values() if not Path(path).is_file()]
+        if missing:
+            raise BoardRunnerError("model library not built: " + ", ".join(missing))
+        outcome = run_firmware(config, Path(request.work_dir) / "runs" / f"round_{request.round}",
+                               seconds=seconds, stimulus=stimulus, scrolls=scrolls, svd=svd)
+        return str(outcome.trace)
+
+    return step

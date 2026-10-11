@@ -176,6 +176,58 @@ def _parse_pairs(entries, separator, option, form, example):
     return pairs
 
 
+_LLM_OPTIONS = [
+    click.option('--model', default='gpt-4o', show_default=True, type=str, help='Model name to use.'),
+    click.option('--model-provider', default='openai', show_default=True,
+                 type=click.Choice(['openai', 'ollama'], case_sensitive=False), help='LLM provider backend.'),
+    click.option('--env-file', default='~/.fastdyn.env', show_default=True, type=str,
+                 help='Path to .env file containing OPENAI_API_KEY.'),
+    click.option('--temperature', default=0.2, show_default=True, type=float,
+                 help='Sampling temperature. For Ollama, the default is 0.1 unless this option is explicitly set.'),
+    click.option('--reasoning-effort', type=click.Choice(["none", "minimal", "low", "medium", "high", "xhigh"]),
+                 default=None, help='Reasoning effort for supported gpt-5 and o-series models.'),
+    click.option('--stateless/--no-stateless', default=True, show_default=True,
+                 help='Keep (--stateless) or strip (--no-stateless) the conversation reset line in prompts.'),
+    click.option('--max-retries', default=1, show_default=True, type=int,
+                 help='Maximum number of follow-up requests after a parse, patch or compile failure.'),
+    click.option('--evaluate/--no-evaluate', default=False, show_default=True,
+                 help='Write per-call metrics to fastdyn_llm_history/metrics.jsonl.'),
+    click.option('--ollama-url', default='http://127.0.0.1:11434', show_default=True, type=str,
+                 help='Base URL for the Ollama HTTP server. Use SSH port forwarding for remote servers.'),
+    click.option('--ollama-num-ctx', default=262144, show_default=True, type=int,
+                 help='Ollama num_ctx option. Set to 0 to use the server/model default.'),
+    click.option('--ollama-timeout', default=1800.0, show_default=True, type=float,
+                 help='Timeout in seconds for non-streaming Ollama requests.'),
+]
+
+_BUILD_DIR_OPTION = click.option(
+    '--build-dir', default='build/models', show_default=True, type=click.Path(resolve_path=True, file_okay=False),
+    metavar='PATH', help='Where the models are compiled to (<name>.so for each <name>.c).')
+
+
+def _llm_options(f):
+    """The options that choose and drive the LLM (codegen and pipeline)."""
+    for option in reversed(_LLM_OPTIONS):
+        f = option(f)
+    return f
+
+
+def _llm_settings(ctx, model, model_provider, env_file, temperature, reasoning_effort, stateless,
+                  ollama_url, ollama_num_ctx, ollama_timeout):
+    from .viomapper.codegen.synthesize import LlmSettings
+    return LlmSettings(
+        model=model,
+        provider=model_provider,
+        env_file=env_file,
+        temperature=None if _is_default(ctx, 'temperature') else temperature,
+        reasoning_effort=reasoning_effort,
+        stateless=stateless,
+        ollama_url=ollama_url,
+        ollama_num_ctx=ollama_num_ctx,
+        ollama_timeout=ollama_timeout,
+    )
+
+
 # ── encode ────────────────────────────────────────────────────────────────────
 
 @cli.command('encode', help='Encoder: turn a hardware MMIO trace into the encoder output (<work>/out_cm), '
@@ -227,41 +279,19 @@ def encode_command(hardware_log, board, svd, method, n, isr_window, work_dir, cl
               help='The slave firmware\'s source code (for -sm).')
 @_ablation_options('codegen')
 @_contract_dir_option
-@click.option('--model', default='gpt-4o', show_default=True, type=str, help='Model name to use.')
-@click.option('--model-provider', default='openai', show_default=True,
-              type=click.Choice(['openai', 'ollama'], case_sensitive=False), help='LLM provider backend.')
-@click.option('--env-file', default='~/.fastdyn.env', show_default=True, type=str,
-              help='Path to .env file containing OPENAI_API_KEY.')
-@click.option('--temperature', default=0.2, show_default=True, type=float,
-              help='Sampling temperature. For Ollama, the default is 0.1 unless this option is explicitly set.')
-@click.option('--reasoning-effort', type=click.Choice(["none", "minimal", "low", "medium", "high", "xhigh"]),
-              default=None, help='Reasoning effort for supported gpt-5 and o-series models.')
-@click.option('--stateless/--no-stateless', default=True, show_default=True,
-              help='Keep (--stateless) or strip (--no-stateless) the conversation reset line in prompts.')
+@_llm_options
 @click.option('--compile/--no-compile', default=False, show_default=True,
               help='Compile the model(s) after writing/patching, with FastDyn\'s model builder.')
-@click.option('--build-dir', default='build/models', show_default=True,
-              type=click.Path(resolve_path=True, file_okay=False), metavar='PATH',
-              help='Where --compile puts the built models (<name>.so for each <name>.c).')
-@click.option('--max-retries', default=1, show_default=True, type=int,
-              help='Maximum number of follow-up requests after a parse, patch or compile failure.')
+@_BUILD_DIR_OPTION
 @click.option('-y', '--yes', is_flag=True, default=False,
               help='Retry without asking (otherwise asked in a terminal, and not retried elsewhere).')
-@click.option('--evaluate/--no-evaluate', default=False, show_default=True,
-              help='Write per-call metrics to fastdyn_llm_history/metrics.jsonl.')
-@click.option('--ollama-url', default='http://127.0.0.1:11434', show_default=True, type=str,
-              help='Base URL for the Ollama HTTP server. Use SSH port forwarding for remote servers.')
-@click.option('--ollama-num-ctx', default=262144, show_default=True, type=int,
-              help='Ollama num_ctx option. Set to 0 to use the server/model default.')
-@click.option('--ollama-timeout', default=1800.0, show_default=True, type=float,
-              help='Timeout in seconds for non-streaming Ollama requests.')
 @click.pass_context
 def codegen_command(ctx, work_dir, output, prompt_only, peripherals, model_name, model_sources, board,
                     hardware_log, slave_model, reference_model, firmware_code, no_vio, no_encoder,
                     contract_dir, model, model_provider, env_file, temperature, reasoning_effort, stateless,
                     compile, build_dir, max_retries, yes, evaluate, ollama_url, ollama_num_ctx, ollama_timeout):
     from .viomapper.codegen.prompt import SlaveSources, write_initial_prompt
-    from .viomapper.codegen.synthesize import LlmSettings, make_client, select_prompt, synthesize
+    from .viomapper.codegen.synthesize import make_client, select_prompt, synthesize
 
     if slave_model and (reference_model is None or firmware_code is None):
         raise click.UsageError("--slave-model needs --reference-model and --firmware-code.")
@@ -291,17 +321,8 @@ def codegen_command(ctx, work_dir, output, prompt_only, peripherals, model_name,
 
     if not output:
         raise click.UsageError("Missing option '-o' / '--output': the model file(s) to write or patch.")
-    settings = LlmSettings(
-        model=model,
-        provider=model_provider,
-        env_file=env_file,
-        temperature=None if _is_default(ctx, 'temperature') else temperature,
-        reasoning_effort=reasoning_effort,
-        stateless=stateless,
-        ollama_url=ollama_url,
-        ollama_num_ctx=ollama_num_ctx,
-        ollama_timeout=ollama_timeout,
-    )
+    settings = _llm_settings(ctx, model, model_provider, env_file, temperature, reasoning_effort, stateless,
+                             ollama_url, ollama_num_ctx, ollama_timeout)
     synthesize(
         work_dir, list(output),
         client=make_client(settings),
@@ -390,6 +411,123 @@ def rca_command(work_dir, ms_map, no_verifier, no_rca, no_vio, no_encoder, contr
     )
     for path in written:
         log.info("Next prompt: %s", path)
+
+
+# ── Running firmware: trace and pipeline ──────────────────────────────────────
+
+def _run_options(f):
+    from .firmware import DEFAULT_SECONDS
+    f = click.option('--stimulus', type=str, default=None, metavar='CMD',
+                     help='Shell command that drives the firmware\'s inputs during the run (e.g. types into a '
+                          'pseudo-terminal); started just before QEMU, stopped at the end. $FASTDYN_WORK_DIR is '
+                          'the run\'s folder.')(f)
+    return click.option('--seconds', type=float, default=DEFAULT_SECONDS, show_default=True,
+                        help='How long each run lasts.')(f)
+
+
+@cli.command('trace', help='Hardware in the loop: run the firmware with its peripherals on the real board '
+                           '(a passthrough configuration) and save the MMIO trace, the input of `encode`.')
+@click.option('-c', '--config', required=True, type=click.Path(resolve_path=True, exists=True, dir_okay=False),
+              metavar='PATH', help='FastDyn configuration routing the peripherals to the board (passthrough).')
+@click.option('-o', '--output', required=True, type=click.Path(resolve_path=True, dir_okay=False),
+              metavar='PATH', help='Where to save the trace.')
+@click.option('-w', '--run-dir', type=click.Path(resolve_path=True, file_okay=False), default=None,
+              metavar='PATH', help='Folder for the run\'s own files (default: <output>.run).')
+@_run_options
+def trace_command(config, output, run_dir, seconds, stimulus):
+    from .hitl.capture import capture_trace
+    capture_trace(config, output, seconds=seconds, stimulus=stimulus, work_dir=run_dir)
+
+
+@cli.command('pipeline', help='The whole loop, automatically: encode the hardware trace, then codegen -> '
+                              'compile -> run -> verify -> rca until the run matches the hardware trace or '
+                              '--max-rounds is reached. Writes <work>/pipeline.json.')
+@click.option('-hw', '--hardware-log', required=True, type=click.Path(resolve_path=True, exists=True,
+              dir_okay=False), metavar='PATH', help='The trace recorded on the hardware (`boardrunner trace`).')
+@click.option('-c', '--config', required=True, type=click.Path(resolve_path=True, exists=True, dir_okay=False),
+              metavar='PATH', help='FastDyn configuration that runs the firmware with the models (elder).')
+@click.option('-d', '--work-dir', default='./fastdyn_work', show_default=True, metavar='PATH',
+              type=click.Path(resolve_path=True, file_okay=False), help='Work directory.')
+@click.option('-p', '--peripheral', 'peripherals', type=str, multiple=True,
+              help='Peripheral(s) the model is learned from (one model). Repeatable.')
+@click.option('-o', '--output', type=click.Path(resolve_path=True, dir_okay=False), default=None,
+              metavar='PATH', help='The model source file (one model).')
+@click.option('-mname', '--model-name', type=str, default=None,
+              help='Name of the model (default: the peripheral); required for several peripherals.')
+@click.option('-ms', '--model-source', 'model_sources', type=str, multiple=True,
+              help='Peripheral(s) whose trace is the primary source for the model.')
+@click.option('-m', '--model', 'model_specs', type=str, multiple=True, metavar='NAME:OUTPUT:PERIPH[,PERIPH]',
+              help='Several models, learned separately and corrected together. Repeat per model; replaces '
+                   '-p/-o/-mname. Example: -m ADC:adc.c:ADC1,ADC2 -m DMA:dma.c:DMA1,DMAMUX1')
+@click.option('--device', 'device_map', type=str, multiple=True, metavar='MODEL=DEVICE',
+              help='The configuration\'s device that loads a model (default: the model name in lower case).')
+@click.option('--max-rounds', type=int, default=10, show_default=True,
+              help='Stop after this many rounds without a match.')
+@_run_options
+@_encoder_options
+@_BUILD_DIR_OPTION
+@_llm_options
+@_ablation_options('rca')
+@click.option('--ms-map', 'ms_map', type=str, multiple=True, metavar='MNAME=PERIPH1,PERIPH2,...',
+              help='Per-model source peripherals for --no-rca / --no-verifier with several models.')
+@_contract_dir_option
+@click.pass_context
+def pipeline_command(ctx, hardware_log, config, work_dir, peripherals, output, model_name, model_sources,
+                     model_specs, device_map, max_rounds, seconds, stimulus, board, svd, method, n, isr_window,
+                     build_dir, model, model_provider, env_file, temperature, reasoning_effort, stateless,
+                     max_retries, evaluate, ollama_url, ollama_num_ctx, ollama_timeout, no_verifier, no_rca,
+                     no_vio, no_encoder, ms_map, contract_dir):
+    from .viomapper.ablations import Ablations
+    from .viomapper.codegen.synthesize import make_client
+    from .viomapper.encoder.encode import resolve_svd
+    from .viomapper.pipeline import ModelSpec, firmware_run_step, run_pipeline
+
+    if model_specs:
+        if peripherals or output or model_name or model_sources:
+            raise click.UsageError("-m/--model replaces -p, -o, -mname and -ms; use one form.")
+        models = []
+        for spec in model_specs:
+            parts = spec.split(':')
+            if len(parts) != 3 or not all(parts):
+                raise click.BadParameter(f"'{spec}' must be NAME:OUTPUT:PERIPH[,PERIPH]", param_hint='--model')
+            name, out, periphs = parts
+            models.append(ModelSpec(name, str(Path(out).resolve()), [p for p in periphs.split(',') if p]))
+    else:
+        if not peripherals or not output:
+            raise click.UsageError("give the model with -p and -o (or several with -m).")
+        if len(peripherals) > 1 and not model_name:
+            raise click.UsageError("a model learned from several peripherals needs -mname.")
+        models = [ModelSpec(model_name or peripherals[0], output, list(peripherals), list(model_sources))]
+
+    sources = {}
+    for name, csv in _parse_pairs(ms_map, '=', '--ms-map', 'MNAME=PERIPH1,PERIPH2,...', 'ADC=ADC1,ADC2').items():
+        sources[name] = [s.strip() for s in csv.split(',') if s.strip()]
+    devices = _parse_pairs(device_map, '=', '--device', 'MODEL=DEVICE', 'USART2=usart2')
+    svd_choice = resolve_svd(board, svd)
+    settings = _llm_settings(ctx, model, model_provider, env_file, temperature, reasoning_effort, stateless,
+                             ollama_url, ollama_num_ctx, ollama_timeout)
+    result = run_pipeline(
+        hardware_log, work_dir,
+        models=models,
+        svd=svd_choice,
+        run=firmware_run_step(config, seconds=seconds, stimulus=stimulus, devices=devices, svd=svd_choice.path),
+        client=make_client(settings),
+        settings=settings,
+        contract=_load_contract(contract_dir),
+        model_sources_map=sources,
+        ablations=Ablations(no_encoder=no_encoder, no_rca=no_rca, no_vio=no_vio, no_verifier=no_verifier),
+        compile=True,
+        build_dir=build_dir,
+        max_retries=max_retries,
+        max_rounds=max_rounds,
+        evaluate=evaluate,
+        method=method, n=n, isr_window=isr_window,
+    )
+    rounds = len(result.rounds)
+    if not result.match:
+        log.warning("No match after %d round(s); see %s/pipeline.json.", rounds, work_dir)
+        sys.exit(1)
+    log.info("Matched in round %d; models: %s", rounds, ", ".join(m.output for m in models))
 
 
 def _add_fastdyn_commands():

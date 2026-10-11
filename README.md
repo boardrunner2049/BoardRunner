@@ -7,8 +7,8 @@ then runs the firmware without the board, on [FastDyn](deps/fastdyn) with the
 learned models and [LibVIO](https://github.com/PSecLab/LibVIO).
 
 > **Status:** BoardRunner is being moved out of the FastDyn repository into
-> this one. The VIOMapper code and the `boardrunner` command are here; the
-> trace capture, examples and evaluation follow.
+> this one. The VIOMapper code, trace capture and the `boardrunner` command
+> are here; the examples and evaluation follow.
 
 ## The paper version
 
@@ -54,6 +54,8 @@ run the command as a module. There is one command per VIOMapper stage of
 the paper (Fig. 7):
 
 ```bash
+python -m boardrunner trace   -c passthrough.toml -o io.trace --seconds 20 \
+                              --stimulus ./type_chars.sh                    # record the hardware trace (board)
 python -m boardrunner encode  -hw io.trace -b STM32F103xx -o work          # Encoder: trace -> work/out_cm
 python -m boardrunner codegen -d work -p USART2 -o usart2.c --compile      # CodeGen: prompt -> LLM -> model
 python -m boardrunner run -c board.toml                                     # run the firmware (FastDyn)
@@ -63,8 +65,27 @@ python -m boardrunner rca     -d work                                       # RC
 python -m boardrunner codegen -d work -o usart2.c --compile                 # next round: patch the model
 ```
 
-`encode` runs once per hardware trace; then `codegen` -> `run` -> `verify` ->
-`rca` repeat until `verify` reports a match. `codegen` sends the work
+`trace` runs the firmware with its peripherals on the real board (a
+FastDyn passthrough configuration) and saves the MMIO trace; `--stimulus`
+is a shell command that drives the firmware's inputs while it runs (for
+example types into the board's serial port), started just before QEMU and
+stopped at the end. `encode` runs once per hardware trace; then `codegen` ->
+`run` -> `verify` -> `rca` repeat until `verify` reports a match.
+
+`pipeline` does all of that automatically:
+
+```bash
+python -m boardrunner pipeline -hw io.trace -c board.toml -p USART2 -o usart2.c \
+       -b STM32F103xx --seconds 15 --stimulus ./type_chars.sh -d work
+```
+
+Each round compiles the model into `--build-dir`, runs `board.toml` on
+FastDyn for `--seconds` with the device of the same name (`usart2`; or
+`--device USART2=NAME`) loading it, and stops when the run's trace matches
+the hardware trace or after `--max-rounds` (10). Several models learned
+separately and corrected together take `-m NAME:OUTPUT:PERIPH[,PERIPH]` per
+model. Every round is recorded in `work/pipeline.json`; runs are in
+`work/runs/round_N/`. `codegen` sends the work
 directory's `revised_prompt.txt` (from `rca`) if there is one, else its
 `initial_prompt.txt`, and builds the initial prompt from the encoder output
 when neither exists; `codegen --prompt-only` writes the initial prompt and
@@ -105,7 +126,8 @@ deps/fastdyn/        FastDyn, pinned
 boardrunner/
   cli.py             the boardrunner command (one subcommand per stage)
   errors.py          the errors a stage raises
-  hitl/              trace capture on the board through FastDyn
+  firmware.py        running firmware on FastDyn for a fixed time (trace and pipeline runs)
+  hitl/              trace capture on the board (capture.py)
   viomapper/
     encoder/         context minimizer (encode.py: the stage)
     codegen/         initial prompts, LLM clients, parsing, patching, compiling
@@ -113,9 +135,9 @@ boardrunner/
     verifier/        trace comparison (verify.py: the stage)
     rca/             revision prompts from the Verifier's results (rca.py: the stage)
     ablations.py     the ablation study's switches
-    pipeline.py      the automatic loop over the stages (run step passed in)
+    pipeline.py      the automatic loop over the stages, and its FastDyn run step
 tests/
 ```
 
-Still to come: trace capture, the `boardrunner pipeline` command (the loop with a real run step), `models/` (learned models), `examples/`
+Still to come: `models/` (learned models), `examples/`
 (firmware and board configurations), `evaluation/`, `docs/` and `docker/`.
