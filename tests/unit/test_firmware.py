@@ -118,15 +118,11 @@ def test_a_run_without_device_models_has_no_trace(config, monkeypatch, tmp_path)
         run_firmware(config, tmp_path / "run", seconds=0.1)
 
 
-def test_a_work_dir_too_long_for_the_qmp_socket_is_refused(config, fake, tmp_path):
+def test_a_long_work_dir_is_left_to_fastdyn(config, fake, tmp_path):
     config.write_text('[Machine]\nplatform = "STM32F103xx"\n')  # QMP socket in the work dir
 
-    with pytest.raises(BoardRunnerError, match="too long for QEMU's control socket"):
-        run_firmware(config, tmp_path / ("x" * 120), seconds=0.1)
-    assert fake.calls == []
-
-    config.write_text(CONFIG_TEXT)  # the socket is elsewhere
-    run_firmware(config, tmp_path / ("x" * 120), seconds=0.1)
+    run_firmware(config, tmp_path / ("x" * 120), seconds=0.1)  # FastDyn picks a short socket path
+    assert len(fake.calls) == 1
 
 
 def test_capture_saves_the_trace(config, fake, tmp_path):

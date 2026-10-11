@@ -22,7 +22,6 @@ log = logging.getLogger(__name__)
 
 TRACE_FILE = "io.log"
 DEFAULT_SECONDS = 10.0
-UNIX_SOCKET_PATH_MAX = 107  # sun_path holds 108 bytes, including the final NUL
 
 
 @dataclass
@@ -50,29 +49,6 @@ def _set_model_paths(handle, scrolls):
         known = sorted({n for m in handle.machines.values() for n in m.devices})
         raise BoardRunnerError(f"the configuration has no device {', '.join(sorted(remaining))}; "
                                f"its devices: {', '.join(known)}")
-
-
-def _check_socket_path(config, work_dir):
-    """FastDyn puts QEMU's QMP socket in the work directory unless the
-    configuration names one; refuse a work directory too long for it."""
-    try:
-        import tomllib
-    except ImportError:  # Python 3.10
-        import tomli as tomllib
-
-    try:
-        with open(config, "rb") as f:
-            socket = (tomllib.load(f).get("Machine") or {}).get("qmp_socket")
-    except (OSError, tomllib.TOMLDecodeError):
-        return  # FastDyn reports a bad configuration itself
-    if socket and socket != "/tmp/qmp.sock":
-        return
-    path = Path(work_dir).resolve() / "qmp.sock"
-    if len(str(path).encode()) > UNIX_SOCKET_PATH_MAX:
-        raise BoardRunnerError(
-            f"the run folder {Path(work_dir).resolve()} is too long for QEMU's control socket "
-            f"(at most {UNIX_SOCKET_PATH_MAX - len('/qmp.sock')} characters): use a shorter work directory, "
-            "or set [Machine] qmp_socket in the configuration")
 
 
 def _start_stimulus(command, work_dir):
@@ -109,7 +85,6 @@ def run_firmware(config, work_dir, *, seconds=DEFAULT_SECONDS, stimulus: Optiona
     if seconds <= 0:
         raise BoardRunnerError(f"the run time must be positive, not {seconds}")
     work_dir = Path(work_dir)
-    _check_socket_path(config, work_dir)
     state = {}
 
     def adjust(handle):

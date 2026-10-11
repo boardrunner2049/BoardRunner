@@ -113,9 +113,12 @@ the LLM.
 
 `examples/nucleo_f103rb/full/` has seven NUCLEO-F103RB workloads whose
 peripherals are all learned models: firmware, models, hardware trace and
-configuration, with build and run commands in each README. Each board's
-`idle_firmware/` holds the firmware the board runs while `trace` forwards
-peripheral accesses to it, with a `flash.sh` for that board.
+configuration, with build and run commands in each README.
+`examples/<board>/hybrid/` has the hybrid workloads of Table 5: the tested
+peripherals are learned models and the rest of the hardware stays on the
+board. Each board's `idle_firmware/` holds the firmware the board runs
+while FastDyn forwards peripheral accesses to it, with a `flash.sh` for that
+board.
 `evaluation/nucleo_f103rb/` reproduces the paper's Tables 6 and 7 on them,
 natively or in the Docker image built by the `Dockerfile` (see its README).
 
@@ -139,6 +142,7 @@ boardrunner/
 examples/<board>/
   idle_firmware/     what the board runs during hardware-in-the-loop runs, and its flash.sh
   full/              workloads whose peripherals are all learned models (nucleo_f103rb: seven)
+  hybrid/            workloads with some peripherals modeled and the rest on the board
 evaluation/
   nucleo_f103rb/     run.sh: Tables 6 and 7 (configs, replay tapes and results in table6/)
 tests/
