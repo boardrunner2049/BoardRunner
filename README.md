@@ -121,6 +121,8 @@ while FastDyn forwards peripheral accesses to it, with a `flash.sh` for that
 board.
 `evaluation/nucleo_f103rb/` reproduces the paper's Tables 6 and 7 on them,
 natively or in the Docker image built by the `Dockerfile` (see its README).
+The rest of `evaluation/` holds the paper's FastDyn measurements (Figures 8
+and 9, run from published Docker images) and the Table 9 ablation runs.
 
 ## Layout
 
@@ -145,6 +147,10 @@ examples/<board>/
   hybrid/            workloads with some peripherals modeled and the rest on the board
 evaluation/
   nucleo_f103rb/     run.sh: Tables 6 and 7 (configs, replay tapes and results in table6/)
+  firmware_slicing/  Figure 8a/8b: function bypass and host operation (published images)
+  hitl_comparison/   Figure 8c: hardware-in-the-loop access cost, STM32F429I-DISC1 (published image)
+  macrobench/        Figure 9: HALucinator vs HALucinator-FD (published images)
+  ablation/          Table 9: the component-ablation runs (LLM I/O, metrics, final models)
 tests/
 Dockerfile           image with QEMU, FastDyn, libhw, LibVIO and BoardRunner; runs evaluation/nucleo_f103rb/run.sh
 ```
