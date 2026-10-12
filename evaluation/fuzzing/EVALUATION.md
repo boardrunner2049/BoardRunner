@@ -2,7 +2,8 @@
 
 This is the self-contained runbook for reproducing the real-world firmware
 and fuzzing measurements in Table 8 from the supplied Docker image. It
-contains no source-build steps.
+contains no source-build steps. The same campaigns also run from this
+repository on the current FastDyn (`README.md`, "Run from this repository").
 
 ## Host requirements
 

@@ -4,10 +4,9 @@
 [Machine]
 platform = "STM32F429"
 
-qemu_path = "qemu-system-arm"
 
 monitor_port = 5555
-qmp_socket   = "/tmp/qmp.sock"
+qmp_socket   = "__QMP_SOCKET__"
 
 enable_gdb    = true
 stop_on_start = false
@@ -40,7 +39,7 @@ finline  = ""
   memory_type  = "SRAM"
 
   backend     = "file"                 # file | ram | memfd
-  memory_file = "/dev/shm/my_m4_ram3"  # only when backend="file"
+  memory_file = "__MAIN_RAM__"
 
   share    = true
   prealloc = false
@@ -62,7 +61,7 @@ finline  = ""
   memory_type  = "SRAM"
 
   backend     = "file"
-  memory_file = "/dev/shm/my_m4_ram"
+  memory_file = "__RAM1__"
 
   share    = true
   prealloc = false
@@ -80,12 +79,9 @@ finline  = ""
   machine = "cortexm"
   cpu     = "cortex-m7"
 
-  binary     = "boardrunner/boardrunner_examples/examples/STM32F769i-eval/LWIP/firmwares/STM32F769I_EVAL.elf" ##
+  binary     = "__FIRMWARE__"
   init_nsvtor = "0x08000000"
 
-  map_file        = "courbet/rover_v422_map.txt"
-  plugin_library = "build-aflnet/libfastdyn.so"
-  monitor_elf     = "../ws/monitor.elf"
 
   log_file    = "qemu.log"
   log_options = "none"

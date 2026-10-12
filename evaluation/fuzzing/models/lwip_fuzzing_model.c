@@ -1,18 +1,17 @@
 /*
- * STM32F7x9 Ethernet MAC/MMC/DMA Device Model — Milestone C (DEBUG, polling-only)
+ * STM32F7x9 Ethernet MAC/MMC/DMA Device Model - fuzzing backend
  *
  * Goals:
  *  - NO IRQs (your firmware polls via ethernetif_input / HAL_ETH_ReadData)
  *  - Ghost PHY that reliably reports LINK UP (incl. reg31 "special status")
- *  - Polling timer drains TAP and delivers frames into RX descriptors
- *  - TX scans descriptors and sends frames to TAP
+ *  - Polling timer consumes fuzz frames and delivers them into RX descriptors
+ *  - TX scans descriptors and sends frames back to the fuzzer
  *  - Verbose logging of:
  *      - MACCR / DMAOMR gating bits
  *      - PHY MII reads/writes (addr/reg/value)
  *      - RX/TX desc OWN + key words (optional dump)
  *
  * Env knobs:
- *   ETH_TAP=tap0
  *   ETH_LOG_LEVEL=0|1|2    (default 2)
  *   ETH_POLL_NS=5000000    (default 5ms)
  *   ETH_RX_POOL_ENABLE=0|1 (default 1; if firmware leaves DESC2=0)
@@ -32,8 +31,14 @@
 #include <stdlib.h>
 #include <arpa/inet.h>
 
-#include <device.h>
-#include <boardrunner/vio.h>
+#include <fastdyn/device_model.h>
+#include <fastdyn/fuzz_hooks.h>
+#include <vio/vio.h>
+
+/* Set by the model's init; debug messages go to FastDyn's log. */
+static const FdHost *g_fd_host;
+#define dev_debug(msg) do { if (g_fd_host) g_fd_host->log(FD_LOG_LEVEL_DEBUG, "ethernet", "%s", (msg)); } while (0)
+
 
 #ifndef ARRAY_SIZE
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
@@ -138,10 +143,15 @@ typedef struct EthernetState {
   hwaddr tx_cur, rx_cur;
   bool have_tx_base, have_rx_base;
 
-  // tap + poll
-  int tap_fd;
+  // fuzz + poll
   uint64_t poll_timer_id;
   uint32_t poll_ticks;
+  uint8_t fuzz_rx_buf[ETH_MAX_FRAME];
+  size_t fuzz_rx_len;
+  bool fuzz_msg_in_flight;
+  bool fuzz_rx_delivered;
+  bool fuzz_io_active;
+  bool fuzz_response_seen;
 
   // RX pool
   bool   rx_pool_enable;
@@ -157,13 +167,17 @@ typedef struct EthernetState {
   // counters
   uint32_t seen_rx_frames;
   uint32_t sent_tx_frames;
-  uint32_t tap_pkts;
-  uint32_t tap_bytes;
+  uint32_t fuzz_rx_frames;
+  uint32_t fuzz_rx_bytes;
+  uint32_t fuzz_tx_frames;
+  uint32_t fuzz_tx_bytes;
 
   bool dumped_rings_once;
 } EthernetState;
 
 static EthernetState g_eth;
+static EthernetState g_eth_snapshot;
+static bool g_eth_snapshot_valid;
 
 // ---- helpers ----
 static inline bool looks_like_sram_addr(uint32_t v) {
@@ -457,7 +471,7 @@ static void ipv4_fix_l4_checksum(uint8_t *ip, size_t ip_len) {
     wr_be16(&l4[cksum_off], csum);
 }
 
-/* Call this on the *full Ethernet frame* you are about to write to TAP */
+/* Call this on the full Ethernet frame before reporting TX to the fuzzer. */
 static void eth_fixup_tx_checksums(uint8_t *frame, size_t frame_len) {
     if (frame_len < 14) return;
 
@@ -614,12 +628,12 @@ static void rx_fixup_ring_buffers(void)
 }
 
 // ---- tiny ethernet header parse for logging/filtering ----
-static void log_tap_pkt_brief(const uint8_t *eth, int eth_len)
+static void log_fuzz_pkt_brief(const uint8_t *eth, int eth_len)
 {
   if (eth_len < 14) return;
   uint16_t type = (uint16_t)((eth[12] << 8) | eth[13]);
   const uint8_t *dst = eth + 0;
-  LOG2("[eth] tap rx n=%d dst=%02x:%02x:%02x:%02x:%02x:%02x type=%04x\n",
+  LOG2("[eth] fuzz rx n=%d dst=%02x:%02x:%02x:%02x:%02x:%02x type=%04x\n",
        eth_len,
        dst[0],dst[1],dst[2],dst[3],dst[4],dst[5],
        (unsigned)type);
@@ -639,13 +653,15 @@ static void maca0_get(uint8_t mac[6])
 
 static bool should_accept_frame(const uint8_t *eth, int eth_len)
 {
+  if (g_eth.promisc) return eth_len > 0;
   if (eth_len < 14) return false;
 
-  // before promisc check:
- if ((eth[0] & 1) && !(eth[0]==0xff && eth[1]==0xff && eth[2]==0xff && eth[3]==0xff && eth[4]==0xff && eth[5]==0xff))
- return false;
-
-  if (g_eth.promisc) return true;
+  // Drop non-broadcast multicast unless explicitly in promisc mode.
+  if ((eth[0] & 1) &&
+      !(eth[0] == 0xff && eth[1] == 0xff && eth[2] == 0xff &&
+        eth[3] == 0xff && eth[4] == 0xff && eth[5] == 0xff)) {
+    return false;
+  }
 
   const uint8_t *dst = eth;
   static const uint8_t bcast[6] = {0xff,0xff,0xff,0xff,0xff,0xff};
@@ -667,7 +683,6 @@ static bool should_accept_frame(const uint8_t *eth, int eth_len)
 static void tx_scan_and_send(void)
 {
   if (!g_eth.have_tx_base) return;
-  if (g_eth.tap_fd < 0) return;
 
   if (!g_eth.ignore_enable) {
     if (!mac_tx_enabled()) return;
@@ -736,39 +751,33 @@ static void tx_scan_and_send(void)
     }
 
     if (ls) {
-    //   if (frame_len > 0) {
-    //     tx_apply_hw_csum(first_des0, frame, frame_len);
-    //     uint32_t send_len = frame_len;
-    //     if (send_len < 60) {
-    //     memset(frame + send_len, 0, 60 - send_len);
-    //     send_len = 60;
-    //     }
-    //     api_tap_send(g_eth.tap_fd, frame, (int)send_len);
-    //     g_eth.sent_tx_frames++;
-    //     LOG1("[eth] TX sent frame_len=%u send_len=%u last_desc=0x%08x\n",
-    //         (unsigned)frame_len, (unsigned)send_len, (unsigned)g_eth.tx_cur);
-    //   }
-    if (frame_len > 0) {
+      if (frame_len > 0) {
         // Option A: Keep relying on descriptors (risky if firmware is lazy)
         tx_apply_hw_csum(first_des0, frame, frame_len);
 
-        // Option B (RECOMMENDED): Force valid checksums for the host OS
-        // This ensures the packet is valid regardless of what the firmware requested.
+        // Keep responses valid regardless of the checksum mode the firmware requested.
         eth_fixup_tx_checksums(frame, frame_len);
 
         uint32_t send_len = frame_len;
         if (send_len < 60) {
-            memset(frame + send_len, 0, 60 - send_len);
-            send_len = 60;
+          memset(frame + send_len, 0, 60 - send_len);
+          send_len = 60;
         }
 
-        api_tap_send(g_eth.tap_fd, frame, (int)send_len);
+        if (g_eth.fuzz_io_active) {
+          //printf("[eth] setting data\n");
+          fuzz_set_data((char *)frame, send_len);
+          g_eth.fuzz_response_seen = true;
+          g_eth.fuzz_tx_frames++;
+          g_eth.fuzz_tx_bytes += send_len;
+        }
         g_eth.sent_tx_frames++;
-        LOG1("[eth] TX sent frame_len=%u send_len=%u last_desc=0x%08x\n",
-            (unsigned)frame_len, (unsigned)send_len, (unsigned)g_eth.tx_cur);
+        LOG1("[eth] TX fuzz frame_len=%u send_len=%u active=%d last_desc=0x%08x\n",
+             (unsigned)frame_len, (unsigned)send_len,
+             g_eth.fuzz_io_active ? 1 : 0, (unsigned)g_eth.tx_cur);
       }
 
-    g_eth.DMASR |= (DMASR_TI | DMASR_NIS);
+      g_eth.DMASR |= (DMASR_TI | DMASR_NIS);
       in_frame = false;
       frame_len = 0;
     }
@@ -848,123 +857,128 @@ static bool deliver_one_rx(const uint8_t *pkt, uint32_t pkt_len)
   return true;
 }
 
-#define ETH_HDR_LEN 14
-#define IP_HDR_LEN  20
-#define TCP_HDR_LEN 20
+static void eth_clear_fuzz_exchange(EthernetState *s)
+{
+  s->fuzz_rx_len = 0;
+  s->fuzz_msg_in_flight = false;
+  s->fuzz_rx_delivered = false;
+  s->fuzz_io_active = false;
+  s->fuzz_response_seen = false;
+}
 
-/* ----------------- Checksums ----------------- */
+static void eth_save_model_snapshot(void)
+{
+  g_eth_snapshot = g_eth;
+  eth_clear_fuzz_exchange(&g_eth_snapshot);
+  g_eth_snapshot_valid = true;
+  LOG1("[eth] model snapshot saved rx_cur=0x%08x tx_cur=0x%08x DMASR=%08x\n",
+       (unsigned)g_eth_snapshot.rx_cur, (unsigned)g_eth_snapshot.tx_cur,
+       g_eth_snapshot.DMASR);
+}
 
-// static uint16_t csum16(const void *data, size_t len) {
-//     uint32_t sum = 0;
-//     const uint16_t *p = data;
+static void eth_restore_model_snapshot(void)
+{
+  if (!g_eth_snapshot_valid) {
+    LOG1("[eth] restore requested before model snapshot exists\n");
+    return;
+  }
 
-//     while (len > 1) {
-//         sum += *p++;
-//         len -= 2;
-//     }
-//     if (len)
-//         sum += *(uint8_t *)p;
+  uint64_t poll_timer_id = g_eth.poll_timer_id;
+  uint32_t poll_ticks = g_eth.poll_ticks;
+  uint32_t seen_rx_frames = g_eth.seen_rx_frames;
+  uint32_t sent_tx_frames = g_eth.sent_tx_frames;
+  uint32_t fuzz_rx_frames = g_eth.fuzz_rx_frames;
+  uint32_t fuzz_rx_bytes = g_eth.fuzz_rx_bytes;
+  uint32_t fuzz_tx_frames = g_eth.fuzz_tx_frames;
+  uint32_t fuzz_tx_bytes = g_eth.fuzz_tx_bytes;
 
-//     while (sum >> 16)
-//         sum = (sum & 0xffff) + (sum >> 16);
+  g_eth = g_eth_snapshot;
+  g_eth.poll_timer_id = poll_timer_id ? poll_timer_id : g_eth_snapshot.poll_timer_id;
+  g_eth.poll_ticks = poll_ticks;
+  g_eth.seen_rx_frames = seen_rx_frames;
+  g_eth.sent_tx_frames = sent_tx_frames;
+  g_eth.fuzz_rx_frames = fuzz_rx_frames;
+  g_eth.fuzz_rx_bytes = fuzz_rx_bytes;
+  g_eth.fuzz_tx_frames = fuzz_tx_frames;
+  g_eth.fuzz_tx_bytes = fuzz_tx_bytes;
+  eth_clear_fuzz_exchange(&g_eth);
 
-//     return ~sum;
-// }
+  LOG1("[eth] model snapshot restored rx_cur=0x%08x tx_cur=0x%08x DMASR=%08x\n",
+       (unsigned)g_eth.rx_cur, (unsigned)g_eth.tx_cur, g_eth.DMASR);
+}
 
-// static uint16_t tcp_checksum(
-//     uint32_t src_ip,
-//     uint32_t dst_ip,
-//     const uint8_t *tcp,
-//     size_t tcp_len
-// ) {
-//     struct {
-//         uint32_t src;
-//         uint32_t dst;
-//         uint8_t zero;
-//         uint8_t proto;
-//         uint16_t len;
-//     } pseudo;
+static bool eth_begin_fuzz_exchange(void)
+{
+  uint8_t frame[ETH_MAX_FRAME];
+  size_t n = fuzz_get_data((char *)frame, sizeof(frame));
+  if (n == 0) {
+    return false;
+  }
+  //printf("[eth] getting data\n");
 
-//     pseudo.src  = src_ip;
-//     pseudo.dst  = dst_ip;
-//     pseudo.zero = 0;
-//     pseudo.proto = 6; /* TCP */
-//     pseudo.len  = htons(tcp_len);
+  if (!g_eth_snapshot_valid) {
+    eth_save_model_snapshot();
+  }
 
-//     uint32_t sum = 0;
-//     sum += csum16(&pseudo, sizeof(pseudo));
-//     sum += csum16(tcp, tcp_len);
+  memcpy(g_eth.fuzz_rx_buf, frame, n);
+  g_eth.fuzz_rx_len = n;
+  g_eth.fuzz_msg_in_flight = true;
+  g_eth.fuzz_rx_delivered = false;
+  g_eth.fuzz_io_active = true;
+  g_eth.fuzz_response_seen = false;
+  g_eth.fuzz_rx_bytes += (uint32_t)n;
 
-//     while (sum >> 16)
-//         sum = (sum & 0xffff) + (sum >> 16);
+  LOG1("[eth] fuzz input accepted len=%u\n", (unsigned)n);
+  return true;
+}
 
-//     return ~sum;
-// }
+static void eth_poll_fuzz_rx(void)
+{
+  if (!g_eth.fuzz_msg_in_flight && !eth_begin_fuzz_exchange()) {
+    return;
+  }
 
-/* ----------------- Frame Builder ----------------- */
+  if (!g_eth.fuzz_msg_in_flight || g_eth.fuzz_rx_delivered) {
+    return;
+  }
 
-size_t build_eth_ipv4_tcp(
-    uint8_t *out,
-    size_t out_len,
-    const uint8_t *payload,
-    size_t payload_len
-) {
-    size_t total_len =
-        ETH_HDR_LEN + IP_HDR_LEN + TCP_HDR_LEN + payload_len;
+  if (!g_eth.have_rx_base) {
+    return;
+  }
 
-    if (out_len < total_len)
-        return 0;
+  if (g_log_level >= 2) {
+    log_fuzz_pkt_brief(g_eth.fuzz_rx_buf, (int)g_eth.fuzz_rx_len);
+  }
 
-    uint8_t *p = out;
+  if (!should_accept_frame(g_eth.fuzz_rx_buf, (int)g_eth.fuzz_rx_len)) {
+    LOG1("[eth] fuzz RX frame rejected by filter len=%u\n",
+         (unsigned)g_eth.fuzz_rx_len);
+    return;
+  }
 
-    /* ---------- Ethernet ---------- */
-    uint8_t dst_mac[6] = {0x02,0x00,0x00,0x00,0x00,0x02};
-    uint8_t src_mac[6] = {0x02,0x00,0x00,0x00,0x00,0x01};
+  if (deliver_one_rx(g_eth.fuzz_rx_buf, (uint32_t)g_eth.fuzz_rx_len)) {
+    g_eth.fuzz_rx_delivered = true;
+    g_eth.fuzz_rx_frames++;
+  }
+}
 
-    memcpy(p, dst_mac, 6);
-    memcpy(p + 6, src_mac, 6);
-    *(uint16_t *)(p + 12) = htons(0x0800); /* IPv4 */
-    p += ETH_HDR_LEN;
+static void eth_fuzz_sync_complete(void)
+{
+  if (!g_eth_snapshot_valid) {
+    eth_save_model_snapshot();
+  }
 
-    /* ---------- IPv4 ---------- */
-    memset(p, 0, IP_HDR_LEN);
-    p[0] = 0x45; /* v4, ihl=5 */
-    p[1] = 0x00;
-    *(uint16_t *)(p + 2) = htons(IP_HDR_LEN + TCP_HDR_LEN + payload_len);
-    *(uint16_t *)(p + 4) = htons(0x1337);
-    *(uint16_t *)(p + 6) = htons(0x4000); /* DF */
-    p[8] = 64; /* TTL */
-    p[9] = 6;  /* TCP */
+  tx_scan_and_send();
 
-    uint32_t src_ip = htonl(0x0a000001); /* 10.0.0.1 */
-    uint32_t dst_ip = htonl(0xc0a80802); /* 10.0.0.2 */
-
-    memcpy(p + 12, &src_ip, 4);
-    memcpy(p + 16, &dst_ip, 4);
-
-    // *(uint16_t *)(p + 10) = csum16(p, IP_HDR_LEN);
-    // p += IP_HDR_LEN;
-
-    /* ---------- TCP ---------- */
-    memset(p, 0, TCP_HDR_LEN);
-    *(uint16_t *)(p + 0) = htons(12345); /* src port */
-    *(uint16_t *)(p + 2) = htons(80);    /* dst port */
-    *(uint32_t *)(p + 4) = htonl(1);      /* seq */
-    *(uint32_t *)(p + 8) = htonl(1);      /* ack */
-
-    p[12] = (5 << 4);  /* data offset */
-    p[13] = 0x18;      /* PSH | ACK */
-    *(uint16_t *)(p + 14) = htons(4096); /* window */
-
-    memcpy(p + TCP_HDR_LEN, payload, payload_len);
-
-    // *(uint16_t *)(p + 16) =
-    //     tcp_checksum(src_ip, dst_ip, p,
-    //                  TCP_HDR_LEN + payload_len);
-
-    eth_fixup_tx_checksums(p, total_len);
-
-    return total_len;
+  if (g_eth.fuzz_msg_in_flight) {
+    LOG1("[eth] fuzz exchange complete delivered=%d response=%d\n",
+         g_eth.fuzz_rx_delivered ? 1 : 0,
+         g_eth.fuzz_response_seen ? 1 : 0);
+    eth_clear_fuzz_exchange(&g_eth);
+  } else {
+    g_eth.fuzz_io_active = false;
+    g_eth.fuzz_response_seen = false;
+  }
 }
 
 static void eth_periodic_poll(void *opaque)
@@ -977,31 +991,14 @@ static void eth_periodic_poll(void *opaque)
 
   // TX then RX
   tx_scan_and_send();
-
-  if (g_eth.tap_fd < 0) return;
-  if (!g_eth.have_rx_base) return;
-
-  uint8_t buf[ETH_MAX_FRAME];
-
-  for (int i = 0; i < 32; i++) {
-    //int n = build_eth_ipv4_tcp(buf, ETH_MAX_FRAME, "GET /leds.cgi?led=2&led=4 HTTP/1.0\r\n\r\n", strlen("GET /leds.cgi?led=2&led=4 HTTP/1.0\r\n\r\n") + 1);
-    int n = api_tap_recv_nonblock(g_eth.tap_fd, buf, (int)sizeof(buf));
-    if (n <= 0) break;
-
-    g_eth.tap_pkts++;
-    g_eth.tap_bytes += (uint32_t)n;
-
-    if (g_log_level >= 2) log_tap_pkt_brief(buf, n);
-
-    if (!should_accept_frame(buf, n)) continue;
-
-    if (!deliver_one_rx(buf, (uint32_t)n)) break;
-  }
+  eth_poll_fuzz_rx();
 
   // Heartbeat
   if ((g_eth.poll_ticks % 200u) == 0u) { // ~1s if 5ms poll
-    LOG1("[eth] alive: tap_pkts=%u tap_bytes=%u rx=%u tx=%u MACCR=%08x DMAOMR=%08x DMASR=%08x rx_cur=%08x tx_cur=%08x\n",
-         g_eth.tap_pkts, g_eth.tap_bytes, g_eth.seen_rx_frames, g_eth.sent_tx_frames,
+    LOG1("[eth] alive: fuzz_rx=%u/%u fuzz_tx=%u/%u rx=%u tx=%u MACCR=%08x DMAOMR=%08x DMASR=%08x rx_cur=%08x tx_cur=%08x\n",
+         g_eth.fuzz_rx_frames, g_eth.fuzz_rx_bytes,
+         g_eth.fuzz_tx_frames, g_eth.fuzz_tx_bytes,
+         g_eth.seen_rx_frames, g_eth.sent_tx_frames,
          g_eth.MACCR, g_eth.DMAOMR, g_eth.DMASR,
          (unsigned)g_eth.rx_cur, (unsigned)g_eth.tx_cur);
   }
@@ -1044,7 +1041,13 @@ static bool handle_dma_read(hwaddr addr, unsigned size, uint64_t *out)
     case DMARPDR_OFF:  *out = subread_u32(g_eth.DMARPDR, size, byte_off); return true;
     case DMARDLAR_OFF: *out = subread_u32(g_eth.DMARDLAR, size, byte_off); return true;
     case DMATDLAR_OFF: *out = subread_u32(g_eth.DMATDLAR, size, byte_off); return true;
-    case DMASR_OFF:    *out = subread_u32(g_eth.DMASR, size, byte_off); return true;
+    case DMASR_OFF:
+      /* The firmware polls DMA status in HAL_ETH_ReadData.  Deliver the next
+       * fuzz frame at that hardware boundary, rather than waiting for host
+       * wall-clock timer progress. */
+      eth_poll_fuzz_rx();
+      *out = subread_u32(g_eth.DMASR, size, byte_off);
+      return true;
     case DMAOMR_OFF:   *out = subread_u32(g_eth.DMAOMR, size, byte_off); return true;
     default: return false;
   }
@@ -1172,6 +1175,7 @@ static bool handle_dma_write(hwaddr addr, uint64_t value, unsigned size)
       // Poll demand; some stacks poke this to recover from RU.
       g_eth.DMASR &= ~DMASR_RU;
       rx_fixup_ring_buffers();
+      eth_poll_fuzz_rx();
       return true;
 
     case DMASR_OFF: {
@@ -1187,8 +1191,9 @@ static bool handle_dma_write(hwaddr addr, uint64_t value, unsigned size)
 }
 
 // ---- Public API expected by your loader ----
-uint64_t ethernet_read(void *opaque, hwaddr addr, unsigned size)
+static uint64_t ethernet_read(void *opaque, hwaddr addr, unsigned size, uint64_t pc)
 {
+    (void)pc;
   (void)opaque;
   uint64_t out = 0;
 
@@ -1198,8 +1203,9 @@ uint64_t ethernet_read(void *opaque, hwaddr addr, unsigned size)
   return 0;
 }
 
-void ethernet_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
+static void ethernet_write(void *opaque, hwaddr addr, uint64_t value, unsigned size, uint64_t pc)
 {
+    (void)pc;
   (void)opaque;
 
   if (is_in_range(addr, ETH_DMA_BASE, 0x1000)) { (void)handle_dma_write(addr, value, size); return; }
@@ -1207,10 +1213,11 @@ void ethernet_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
   if (is_in_range(addr, ETH_MAC_BASE, 0x2000)) { (void)handle_mac_write(addr, value, size); return; }
 }
 
-void ethernet_init(ConfigSection* model_info)
+static void ethernet_init_state(void)
 {
-  (void)model_info;
   memset(&g_eth, 0, sizeof(g_eth));
+  memset(&g_eth_snapshot, 0, sizeof(g_eth_snapshot));
+  g_eth_snapshot_valid = false;
 
   // baseline-ish defaults
   g_eth.DMABMR = 0x00020100u;
@@ -1236,16 +1243,67 @@ void ethernet_init(ConfigSection* model_info)
   g_eth.promisc = true;
   if (pr && pr[0] == '0') g_eth.promisc = false;
 
-  const char *ifname = getenv("ETH_TAP");
-  if (!ifname || !ifname[0]) ifname = "tap0";
-
-  g_eth.tap_fd = api_tap_init(ifname);
-  if (g_eth.tap_fd >= 0) LOG1("[eth] TAP initialized: %s (fd=%d)\n", ifname, g_eth.tap_fd);
-  else LOG1("[eth] TAP init failed (%s)\n", ifname);
+  fuzz_register_callback(eth_fuzz_sync_complete);
+  fuzz_register_input_callback(eth_poll_fuzz_rx);
+  fuzz_register_restore(eth_restore_model_snapshot);
 
   g_eth.poll_timer_id = qemu_plugin_timer_new_period_ns(eth_periodic_poll, NULL, poll_ns);
 
-  LOG1("[eth] init complete (polling-only, no IRQ). log=%d rx_pool=%d promisc=%d ignore_enable=%d poll_ns=%llu\n",
+  LOG1("[eth] init complete (fuzz backend, polling-only, no IRQ). log=%d rx_pool=%d promisc=%d ignore_enable=%d poll_ns=%llu\n",
        g_log_level, g_eth.rx_pool_enable ? 1 : 0, g_eth.promisc ? 1 : 0, g_eth.ignore_enable ? 1 : 0,
        (unsigned long long)poll_ns);
 }
+
+
+/* --- FastDyn model ABI v2 ----------------------------------------------------
+ * The fuzzer's callbacks take no context, so the state above stays static and
+ * this file serves one instance of each device it models (`ethernet`); FastDyn
+ * calls init once per configured device, with its name. */
+
+typedef struct {
+    int dev;      /* which device of this file */
+    void *state;  /* what that device's functions take as opaque */
+} FuzzModelHandle;
+
+static void *fuzz_model_init(const FdDevice *dev, const char *config_json, const FdHost *host)
+{
+    (void)config_json;
+    g_fd_host = host;
+    FuzzModelHandle *h = calloc(1, sizeof(*h));
+    if (!h) {
+        return NULL;
+    }
+    if (strcmp(dev->name, "ethernet") == 0) {
+        h->dev = 0;
+        ethernet_init_state();
+    } else {
+        host->log(FD_LOG_LEVEL_ERROR, dev->name, "this model file has no device of that name");
+        free(h);
+        return NULL;
+    }
+    return h;
+}
+
+static uint64_t fuzz_model_read(void *opaque, hwaddr addr, unsigned size, uint64_t pc)
+{
+    FuzzModelHandle *h = opaque;
+    switch (h->dev) {
+    case 0: return ethernet_read(h->state, addr, size, pc);
+    }
+    return 0;
+}
+
+static void fuzz_model_write(void *opaque, hwaddr addr, uint64_t value, unsigned size, uint64_t pc)
+{
+    FuzzModelHandle *h = opaque;
+    switch (h->dev) {
+    case 0: ethernet_write(h->state, addr, value, size, pc); break;
+    }
+}
+
+const FdModel fastdyn_model = {
+    FASTDYN_MODEL_ABI_FIELDS,
+    .init = fuzz_model_init,
+    .read = fuzz_model_read,
+    .write = fuzz_model_write,
+};

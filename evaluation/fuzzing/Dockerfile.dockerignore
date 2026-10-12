@@ -1,0 +1,32 @@
+# For evaluation/fuzzing/Dockerfile (BuildKit reads it instead of the root
+# .dockerignore): the root one, with the SVD files of the Table 8 boards.
+# Host state and build products; the image builds everything itself
+**/.git
+**/.venv
+**/__pycache__
+**/*.pyc
+*.egg-info
+**/*.egg-info
+**/fastdyn_work*
+**/fastdyn_llm_history*
+examples/**/build
+examples/**/build_learned
+examples/**/work
+deps/fastdyn/build
+deps/fastdyn/fastdyn-env
+deps/fastdyn/*.log
+deps/fastdyn/third_party/common/qemu/build
+deps/fastdyn/third_party/common/libhw/out
+deps/fastdyn/virtuals/fuzzer/fastdyn_fuzz_lib/target
+
+# FastDyn submodules the image does not use. Of the SVD collection it needs
+# the four boards' files.
+deps/fastdyn/third_party/courbet_deps
+deps/fastdyn/third_party/common/modelica_models
+deps/fastdyn/third_party/common/rumoca
+deps/fastdyn/third_party/common/cmsis-svd-data
+!deps/fastdyn/third_party/common/cmsis-svd-data/data/STMicro/STM32F103xx.svd
+!deps/fastdyn/third_party/common/cmsis-svd-data/data/STMicro/STM32F429.svd
+!deps/fastdyn/third_party/common/cmsis-svd-data/data/STMicro/STM32F7x9.svd
+!deps/fastdyn/third_party/common/cmsis-svd-data/data/STMicro/STM32H753x.svd
+deps/fastdyn/virtuals/physics/flight_controllers

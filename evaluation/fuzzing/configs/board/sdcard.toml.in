@@ -6,7 +6,7 @@ base_address = "0x20000000"
 memory_size = "512M"
 memory_type = "SRAM"
 backend = "file"
-memory_file = "__SDCARD_MAIN_RAM__"
+memory_file = "__MAIN_RAM__"
 share = true
 prealloc = false
 
@@ -17,19 +17,18 @@ base_address = "0x30000000"
 memory_size = "512K"
 memory_type = "SRAM"
 backend = "file"
-memory_file = "__SDCARD_RAM1__"
+memory_file = "__RAM1__"
 share = true
 prealloc = false
 
 [Machine]
 # Closest repository CMSIS-SVD key; CPU execution remains Cortex-M7.
 platform = "STM32F429"
-qemu_path = "qemu-system-arm"
 enable_gdb = false
 stop_on_start = false
 launch_gdb = false
 monitor_port = 15560
-qmp_socket = "/tmp/fastdyn-f769-sd-qmp.sock"
+qmp_socket = "__QMP_SOCKET__"
 log_file = "qemu.log"
 log_options = "none"
 semihosting = true
@@ -42,8 +41,7 @@ finline = "None"
 arch = "arm"
 machine = "cortexm"
 cpu = "cortex-m7"
-plugin_library = "build/libfastdyn.so"
-binary = "boardrunner/boardrunner_examples/examples/STM32F769i-eval/SD_Card/Firmwares/STM32F769I_EVAL.elf"
+binary = "__FIRMWARE__"
 init_nsvtor = "0x08000000"
 twintrace = "None"
 hardware_trace = "hardware_log/io.log"
@@ -72,7 +70,7 @@ internal_model = "sdmmc1_model"
 [[Device.sdmmc1.handlers]]
 model = "elder"
 enabled = true
-scroll = "__SDCARD_MODEL_PATH__"
+scroll = "__MODEL_PATH__"
 
 [[Device.sdmmc1.handlers]]
 model = "passthrough"

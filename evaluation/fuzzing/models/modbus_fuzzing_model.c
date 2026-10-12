@@ -1,25 +1,18 @@
 // Device Model for USART2
-#include <device.h>
-#include <boardrunner/vio.h>
+#include <fastdyn/device_model.h>
+#include <fastdyn/fuzz_hooks.h>
+#include <vio/vio.h>
+#include <stdlib.h>
 
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
 #include <limits.h>
 
-typedef void (*fuzz_callback_t)(void);
-size_t fuzz_get_data(char *buf, size_t len);
-uint32_t fuzz_get_register(int reg);
-int fuzz_write_memory(unsigned long long addr, uint8_t *mem_buf, int len);
-void fuzz_request_sync(uint32_t resume_pc);
-void fuzz_set_register(uint32_t value, int reg);
-void fuzz_set_data(char *buf, size_t len);
-void fuzz_register_callback(fuzz_callback_t cb);
-void fuzz_register_input_callback(fuzz_callback_t cb);
-void fuzz_register_restore(fuzz_callback_t cb);
-typedef void (*core_callback_t)(unsigned int cpu_index, void *userdata);
-bool core_register_virtual_rule(uint64_t address, core_callback_t callback,
-                                const char *args);
+/* Set by the model's init; debug messages go to FastDyn's log. */
+static const FdHost *g_fd_host;
+#define dev_debug(msg) do { if (g_fd_host) g_fd_host->log(FD_LOG_LEVEL_DEBUG, "usart2", "%s", (msg)); } while (0)
+
 
 // Inferred Register Functions:
 // SR   : dynamic status flags (TXE, TC, RXNE, IDLE, ORE)
@@ -993,7 +986,8 @@ static void usart2_write_reg(USART2State *s, uint32_t offset, uint32_t value) {
 }
 
 // This function will emulate all device reads
-uint64_t usart2_read(void *opaque, hwaddr addr, unsigned size) {
+static uint64_t usart2_read(void *opaque, hwaddr addr, unsigned size, uint64_t pc) {
+    (void)pc;
     USART2State *s = (USART2State *)opaque;
     hwaddr offset = addr - USART2_BASE_ADDR;
     uint32_t val = usart2_read_reg(s, (uint32_t)offset);
@@ -1003,7 +997,8 @@ uint64_t usart2_read(void *opaque, hwaddr addr, unsigned size) {
 }
 
 // This function will emulate all device writes
-void usart2_write(void *opaque, hwaddr addr, uint64_t value, unsigned size) {
+static void usart2_write(void *opaque, hwaddr addr, uint64_t value, unsigned size, uint64_t pc) {
+    (void)pc;
     USART2State *s = (USART2State *)opaque;
     hwaddr offset = addr - USART2_BASE_ADDR;
 
@@ -1012,8 +1007,7 @@ void usart2_write(void *opaque, hwaddr addr, uint64_t value, unsigned size) {
 }
 
 // MUST return pointer to state — framework passes it as opaque to _read/_write
-void* usart2_init(ConfigSection* model_info) {
-    (void)model_info;
+static void *usart2_init_state(void) {
 
     memset(&g_usart2, 0, sizeof(g_usart2));
     memset(&g_usart2_snapshot, 0, sizeof(g_usart2_snapshot));
@@ -1037,24 +1031,24 @@ void* usart2_init(ConfigSection* model_info) {
     fuzz_register_callback(usart2_sync_hook);
     fuzz_register_input_callback(usart2_input_hook);
     fuzz_register_restore(usart2_restore_hook);
-    if (!core_register_virtual_rule(0x080008d0u, usart2_after_fuzz_dr_store,
+    if (!fuzz_register_pc_hook(0x080008d0u, usart2_after_fuzz_dr_store,
                                     "modbus-rx") ||
-        !core_register_virtual_rule(0x080008f4u, usart2_after_fuzz_rx_fsm,
+        !fuzz_register_pc_hook(0x080008f4u, usart2_after_fuzz_rx_fsm,
                                     "modbus-rx") ||
-        !core_register_virtual_rule(0x08000ef2u,
+        !fuzz_register_pc_hook(0x08000ef2u,
                                     usart2_after_fuzz_tx_complete,
                                     "modbus-tx") ||
-        !core_register_virtual_rule(0x08000d1cu, usart2_force_compat_handler,
+        !fuzz_register_pc_hook(0x08000d1cu, usart2_force_compat_handler,
                                     "modbus-rx") ||
-        !core_register_virtual_rule(0x080008e2u, usart2_refresh_irq_sr,
+        !fuzz_register_pc_hook(0x080008e2u, usart2_refresh_irq_sr,
                                     "modbus-rx") ||
-        !core_register_virtual_rule(0x08000cf8u, usart2_force_min_frame,
+        !fuzz_register_pc_hook(0x08000cf8u, usart2_force_min_frame,
                                     "modbus-rx") ||
-        !core_register_virtual_rule(0x08000d28u, usart2_force_min_frame,
+        !fuzz_register_pc_hook(0x08000d28u, usart2_force_min_frame,
                                     "modbus-rx") ||
-        !core_register_virtual_rule(0x08000ba4u, usart2_force_handler_arg,
+        !fuzz_register_pc_hook(0x08000ba4u, usart2_force_handler_arg,
                                     "modbus-rx") ||
-        !core_register_virtual_rule(0x08000de2u, usart2_force_first_idle,
+        !fuzz_register_pc_hook(0x08000de2u, usart2_force_first_idle,
                                     "modbus-rx")) {
         dev_debug("failed to register USART2 RX progression hooks");
     }
@@ -1078,3 +1072,57 @@ void* usart2_init(ConfigSection* model_info) {
     dev_debug("USART2 model initialized with fuzz backend");
     return &g_usart2;
 }
+
+
+/* --- FastDyn model ABI v2 ----------------------------------------------------
+ * The fuzzer's callbacks take no context, so the state above stays static and
+ * this file serves one instance of each device it models (`usart2`); FastDyn
+ * calls init once per configured device, with its name. */
+
+typedef struct {
+    int dev;      /* which device of this file */
+    void *state;  /* what that device's functions take as opaque */
+} FuzzModelHandle;
+
+static void *fuzz_model_init(const FdDevice *dev, const char *config_json, const FdHost *host)
+{
+    (void)config_json;
+    g_fd_host = host;
+    FuzzModelHandle *h = calloc(1, sizeof(*h));
+    if (!h) {
+        return NULL;
+    }
+    if (strcmp(dev->name, "usart2") == 0) {
+        h->dev = 0;
+        h->state = usart2_init_state();
+    } else {
+        host->log(FD_LOG_LEVEL_ERROR, dev->name, "this model file has no device of that name");
+        free(h);
+        return NULL;
+    }
+    return h;
+}
+
+static uint64_t fuzz_model_read(void *opaque, hwaddr addr, unsigned size, uint64_t pc)
+{
+    FuzzModelHandle *h = opaque;
+    switch (h->dev) {
+    case 0: return usart2_read(h->state, addr, size, pc);
+    }
+    return 0;
+}
+
+static void fuzz_model_write(void *opaque, hwaddr addr, uint64_t value, unsigned size, uint64_t pc)
+{
+    FuzzModelHandle *h = opaque;
+    switch (h->dev) {
+    case 0: usart2_write(h->state, addr, value, size, pc); break;
+    }
+}
+
+const FdModel fastdyn_model = {
+    FASTDYN_MODEL_ABI_FIELDS,
+    .init = fuzz_model_init,
+    .read = fuzz_model_read,
+    .write = fuzz_model_write,
+};

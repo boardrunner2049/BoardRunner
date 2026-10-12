@@ -11,7 +11,7 @@ base_address = "0x20000000"
 memory_size  = "512M"
 memory_type  = "SRAM"
 backend      = "file"
-memory_file  = "/dev/shm/my_m4_ram3"
+memory_file  = "__MAIN_RAM__"
 share        = true
 prealloc     = false
 
@@ -22,19 +22,18 @@ base_address = "0x30000000"
 memory_size  = "512K"
 memory_type  = "SRAM"
 backend      = "file"
-memory_file  = "/dev/shm/my_m4_ram"
+memory_file  = "__RAM1__"
 share        = true
 prealloc     = false
 
 # ==============================================================================
 [Machine]
 platform = "STM32F103xx"
-qemu_path = "qemu-system-arm"
 enable_gdb = false
 stop_on_start = false
 launch_gdb = false
 monitor_port = 15557
-qmp_socket = "/tmp/qmp.sock"
+qmp_socket = "__QMP_SOCKET__"
 log_file = "qemu.log"
 log_options = "none"
 semihosting = true
@@ -50,9 +49,7 @@ finline = 'None'
 arch = "arm"
 machine = "cortexm"
 cpu = "cortex-m3"
-plugin_library = "build-aflnet/libfastdyn.so"
-monitor_elf = "../ws/monitor.elf"
-binary = "boardrunner/boardrunner_examples/examples/Nucleo-F103RB/Modbus/firmware/STM32F103RB_Modbus.elf"
+binary = "__FIRMWARE__"
 init_nsvtor = "0x08000000"
 twintrace = "None"
 hardware_trace = 'hardware_log/io.log'

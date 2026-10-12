@@ -18,7 +18,6 @@ memory_file = "__RAM1__"
 share = true
 
 [Machine]
-qemu_path = "__QEMU_PATH__"
 monitor_port = __MONITOR_PORT__
 qmp_socket = "__QMP_SOCKET__"
 coverage = true
@@ -31,7 +30,6 @@ machine = "cortexm"
 cpu = "__CPU__"
 binary = "__FIRMWARE__"
 init_nsvtor = "0x08000000"
-plugin_library = "__FASTDYN_PLUGIN_PATH__"
 
 # Intentionally empty: this run has no peripheral models or handlers.
 [Device.Models]

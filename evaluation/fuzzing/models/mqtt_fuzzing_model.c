@@ -1,18 +1,19 @@
 // Device Model for USART3
 
-#include <device.h>
-#include <boardrunner/vio.h>
+#include <fastdyn/device_model.h>
+#include <fastdyn/fuzz_hooks.h>
+#include <vio/vio.h>
+#include <stdlib.h>
 
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
 #include <stdio.h>
 
-typedef void (*fuzz_callback_t)(void);
-size_t fuzz_get_data(char *buf, size_t len);
-void fuzz_set_data(char *buf, size_t len);
-void fuzz_register_callback(fuzz_callback_t cb);
-void fuzz_register_restore(fuzz_callback_t cb);
+/* Set by the model's init; debug messages go to FastDyn's log. */
+static const FdHost *g_fd_host;
+#define dev_debug(msg) do { if (g_fd_host) g_fd_host->log(FD_LOG_LEVEL_DEBUG, "usart3", "%s", (msg)); } while (0)
+
 
 #define USART3_BASE 0x40004800ULL
 #define USART3_MODEL_SNAPSHOT_PATH "fastdyn_work/model-snap.bin"
@@ -615,13 +616,13 @@ static void usart3_irq_sweep_timer_cb(void *opaque)
 /* Called by BoardRunner at exception entry and exception return respectively.
  * The entry callback is intentionally minimal; all state is set before the
  * vector is asserted. */
-int usart3_interrupt(int number)
+static int usart3_interrupt(int number)
 {
     (void)number;
     return 0;
 }
 
-int usart3_serve(int number)
+static int usart3_serve(int number)
 {
     int64_t now;
     uint64_t next_deadline;
@@ -789,8 +790,9 @@ static void usart3_log_bad_access(const char *op, hwaddr addr, unsigned size, ui
 }
 
 // This function will emulate all device reads
-uint64_t usart3_read(void *opaque, hwaddr addr, unsigned size)
+static uint64_t usart3_read(void *opaque, hwaddr addr, unsigned size, uint64_t pc)
 {
+    (void)pc;
     USART3State *s = (USART3State *)opaque;
     hwaddr offset = addr - USART3_BASE;
 
@@ -843,8 +845,9 @@ uint64_t usart3_read(void *opaque, hwaddr addr, unsigned size)
 }
 
 // This function will emulate all device writes
-void usart3_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
+static void usart3_write(void *opaque, hwaddr addr, uint64_t value, unsigned size, uint64_t pc)
 {
+    (void)pc;
     USART3State *s = (USART3State *)opaque;
     hwaddr offset = addr - USART3_BASE;
 
@@ -977,9 +980,8 @@ void usart3_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
 }
 
 // MUST return pointer to state — framework passes it as opaque to _read/_write
-void* usart3_init(ConfigSection* model_info)
+static void *usart3_init_state(void)
 {
-    (void)model_info;
     const char *aflnet_protocol = getenv("FASTDYN_AFLNET_PROTOCOL");
     bool force_aflnet_fuzz = aflnet_protocol != NULL &&
         strcmp(aflnet_protocol, "MQTT_CLIENT") == 0;
@@ -1133,8 +1135,9 @@ static uint32_t *clocktree_reg_ptr(ClockTreeState *s, hwaddr addr)
     return NULL;
 }
 
-uint64_t clocktree_read(void *opaque, hwaddr addr, unsigned size)
+static uint64_t clocktree_read(void *opaque, hwaddr addr, unsigned size, uint64_t pc)
 {
+    (void)pc;
     ClockTreeState *s = (ClockTreeState *)opaque;
     uint32_t *reg;
 
@@ -1144,8 +1147,9 @@ uint64_t clocktree_read(void *opaque, hwaddr addr, unsigned size)
     return reg != NULL ? *reg : 0;
 }
 
-void clocktree_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
+static void clocktree_write(void *opaque, hwaddr addr, uint64_t value, unsigned size, uint64_t pc)
 {
+    (void)pc;
     ClockTreeState *s = (ClockTreeState *)opaque;
     uint32_t *reg = clocktree_reg_ptr(s, addr);
 
@@ -1164,9 +1168,8 @@ void clocktree_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
     clocktree_update_rcc_status(s);
 }
 
-void* clocktree_init(ConfigSection* model_info)
+static void *clocktree_init_state(void)
 {
-    (void)model_info;
     memset(&g_clocktree, 0, sizeof(g_clocktree));
     g_clocktree_oscillator_shim = getenv("FASTDYN_MQTT_OSC_STARTUP_SHIM") != NULL &&
         strcmp(getenv("FASTDYN_MQTT_OSC_STARTUP_SHIM"), "0") != 0;
@@ -1197,8 +1200,9 @@ typedef struct {
 
 static SysTickState g_systick;
 
-uint64_t systick_read(void *opaque, hwaddr addr, unsigned size)
+static uint64_t systick_read(void *opaque, hwaddr addr, unsigned size, uint64_t pc)
 {
+    (void)pc;
     SysTickState *s = (SysTickState *)opaque;
 
     (void)size;
@@ -1214,8 +1218,9 @@ uint64_t systick_read(void *opaque, hwaddr addr, unsigned size)
     }
 }
 
-void systick_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
+static void systick_write(void *opaque, hwaddr addr, uint64_t value, unsigned size, uint64_t pc)
 {
+    (void)pc;
     SysTickState *s = (SysTickState *)opaque;
 
     switch (addr - SYSTICK_BASE) {
@@ -1239,9 +1244,90 @@ void systick_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
     }
 }
 
-void* systick_init(ConfigSection* model_info)
+static void *systick_init_state(void)
 {
-    (void)model_info;
     memset(&g_systick, 0, sizeof(g_systick));
     return &g_systick;
 }
+
+
+/* --- FastDyn model ABI v2 ----------------------------------------------------
+ * The fuzzer's callbacks take no context, so the state above stays static and
+ * this file serves one instance of each device it models (`usart3` / `clocktree` / `systick`); FastDyn
+ * calls init once per configured device, with its name. */
+
+typedef struct {
+    int dev;      /* which device of this file */
+    void *state;  /* what that device's functions take as opaque */
+} FuzzModelHandle;
+
+static void *fuzz_model_init(const FdDevice *dev, const char *config_json, const FdHost *host)
+{
+    (void)config_json;
+    g_fd_host = host;
+    FuzzModelHandle *h = calloc(1, sizeof(*h));
+    if (!h) {
+        return NULL;
+    }
+    if (strcmp(dev->name, "usart3") == 0) {
+        h->dev = 0;
+        h->state = usart3_init_state();
+    } else if (strcmp(dev->name, "clocktree") == 0) {
+        h->dev = 1;
+        h->state = clocktree_init_state();
+    } else if (strcmp(dev->name, "systick") == 0) {
+        h->dev = 2;
+        h->state = systick_init_state();
+    } else {
+        host->log(FD_LOG_LEVEL_ERROR, dev->name, "this model file has no device of that name");
+        free(h);
+        return NULL;
+    }
+    return h;
+}
+
+static uint64_t fuzz_model_read(void *opaque, hwaddr addr, unsigned size, uint64_t pc)
+{
+    FuzzModelHandle *h = opaque;
+    switch (h->dev) {
+    case 0: return usart3_read(h->state, addr, size, pc);
+    case 1: return clocktree_read(h->state, addr, size, pc);
+    case 2: return systick_read(h->state, addr, size, pc);
+    }
+    return 0;
+}
+
+static void fuzz_model_write(void *opaque, hwaddr addr, uint64_t value, unsigned size, uint64_t pc)
+{
+    FuzzModelHandle *h = opaque;
+    switch (h->dev) {
+    case 0: usart3_write(h->state, addr, value, size, pc); break;
+    case 1: clocktree_write(h->state, addr, value, size, pc); break;
+    case 2: systick_write(h->state, addr, value, size, pc); break;
+    }
+}
+
+static void fuzz_model_interrupt(void *opaque, int irq)
+{
+    FuzzModelHandle *h = opaque;
+    switch (h->dev) {
+    case 0: (void)usart3_interrupt(irq); break;
+    }
+}
+
+static void fuzz_model_serve(void *opaque, int irq)
+{
+    FuzzModelHandle *h = opaque;
+    switch (h->dev) {
+    case 0: (void)usart3_serve(irq); break;
+    }
+}
+
+const FdModel fastdyn_model = {
+    FASTDYN_MODEL_ABI_FIELDS,
+    .init = fuzz_model_init,
+    .read = fuzz_model_read,
+    .write = fuzz_model_write,
+    .interrupt = fuzz_model_interrupt,
+    .serve = fuzz_model_serve,
+};
