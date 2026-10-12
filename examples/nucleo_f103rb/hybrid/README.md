@@ -11,6 +11,7 @@ the idle firmware (`../idle_firmware/`).
 | `GPIO` | GPIOA + GPIOC (FIFO or pseudo-terminal flavor) | button presses (`stimulus.sh`) |
 | `GPIO_INT` | GPIOC | the board's user button |
 | `I2C` | I2C1, BME280 slave | none |
+| `Modbus` | USART2 | Modbus requests (`stimulus.sh`) |
 | `PWM` | TIM3 | none |
 | `SPI` | SPI2, BME280 slave | none |
 | `TIMER` | TIM3 | none |
