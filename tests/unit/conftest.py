@@ -8,13 +8,16 @@ from pathlib import Path
 from boardrunner.viomapper.codegen.prompts import contract as contract_module
 
 TEST_CONTRACT = Path(__file__).resolve().parent.parent / "fixtures" / "contract"
+TEST_RULES = TEST_CONTRACT.parent / "model_rules.md"
 
 
 @pytest.fixture(autouse=True)
 def test_contract(monkeypatch):
     """Prompts read tests/fixtures/contract, a small copy of LibVIO's model
-    contract, so the tests need no installed LibVIO."""
+    contract, and tests/fixtures/model_rules.md, a small copy of the rules,
+    so the tests need no installed LibVIO and do not change with the rules."""
     monkeypatch.setenv(contract_module.CONTRACT_DIR_ENV, str(TEST_CONTRACT))
+    monkeypatch.setattr(contract_module, "RULES_FILE", TEST_RULES)
     contract_module._load.cache_clear()
     yield TEST_CONTRACT
     contract_module._load.cache_clear()

@@ -1,13 +1,15 @@
-"""The LibVIO model contract, as text for LLM prompts.
+"""What the prompts tell the LLM about device models.
 
-LibVIO installs the rules a device model follows (``model_rules.md``), its
-API (``api_summary.md``, one line per function) and the emulator's host
-functions (``host_api.md``). The prompts take these from the contract instead of
-keeping their own copies, so they always describe the LibVIO and FastDyn
-the models are built against.
+The functions a model can call come from LibVIO's model contract: the
+LibVIO API (``api_summary.md``, one line per function) and the emulator's
+host functions (``host_api.md``). The prompts take these from the installed
+LibVIO instead of keeping their own copies, so they always describe the
+LibVIO and FastDyn the models are built against. The contract directory is,
+in this order: the one passed in, ``$VIO_CONTRACT_DIR``, or
+``pkg-config --variable=contractdir vio``.
 
-The contract directory is, in this order: the one passed in, ``$VIO_CONTRACT_DIR``,
-or ``pkg-config --variable=contractdir vio``.
+How a model is written is BoardRunner's own: the rules in
+``model_rules.md`` next to this file.
 """
 
 import os
@@ -21,11 +23,11 @@ from pathlib import Path
 from boardrunner.errors import BoardRunnerError
 
 CONTRACT_DIR_ENV = "VIO_CONTRACT_DIR"
+RULES_FILE = Path(__file__).resolve().parent / "model_rules.md"
 
-# The contract versions these prompts are written for: the VIO and audience
-# markers came in 1.2.0.
-SUPPORTED_MAJOR = 1
-MIN_MINOR = 2
+# The contract versions these prompts read, as {major: lowest minor}: the VIO
+# and audience markers came in 1.2.0; 2.0.0 left the model rules to the tools.
+SUPPORTED = {1: 2, 2: 0}
 
 AUDIENCES = ("model", "slave", "host")
 
@@ -35,7 +37,8 @@ _AUDIENCE = re.compile(r"^<!-- for: (\w+) -->$", re.MULTILINE)
 
 
 class ContractError(BoardRunnerError):
-    """The contract cannot be found or read, or is not one these prompts support."""
+    """The contract or the rules cannot be found or read, or the contract is
+    not one these prompts support."""
 
 
 def find_contract_dir(directory=None):
@@ -58,11 +61,14 @@ def find_contract_dir(directory=None):
 
 
 def _read(directory, name):
-    path = directory / name
+    return _read_file(directory / name)
+
+
+def _read_file(path):
     try:
         return path.read_text(encoding="utf-8")
     except OSError as e:
-        raise ContractError(f"cannot read the LibVIO model contract: {e}") from e
+        raise ContractError(f"cannot read the model contract: {e}") from e
 
 
 def _shift_headings(text, levels):
@@ -94,6 +100,9 @@ def _tidy(text):
 
 @dataclass(frozen=True)
 class Contract:
+    """LibVIO's contract (``directory``, ``version``, the API files) and
+    BoardRunner's model rules."""
+
     directory: Path
     version: str
     model_rules_md: str
@@ -130,7 +139,7 @@ class Contract:
 
 
 @lru_cache(maxsize=None)
-def _load(directory):
+def _load(directory, rules_file):
     if not directory.is_dir():
         raise ContractError(f"the LibVIO model contract directory does not exist: {directory}")
     version = _read(directory, "VERSION").strip()
@@ -138,14 +147,14 @@ def _load(directory):
     if not match:
         raise ContractError(f"{directory / 'VERSION'}: not a version: {version!r}")
     major, minor = int(match.group(1)), int(match.group(2))
-    if major != SUPPORTED_MAJOR or minor < MIN_MINOR:
+    if major not in SUPPORTED or minor < SUPPORTED[major]:
         raise ContractError(
             f"the LibVIO model contract in {directory} is version {version}; these prompts "
-            f"need {SUPPORTED_MAJOR}.{MIN_MINOR} or a later {SUPPORTED_MAJOR}.x")
+            f"need 1.2 or later, up to 2.x")
     contract = Contract(
         directory=directory,
         version=version,
-        model_rules_md=_read(directory, "model_rules.md"),
+        model_rules_md=_read_file(rules_file),
         api_summary_md=_read(directory, "api_summary.md"),
         host_api_md=_read(directory, "host_api.md"),
     )
@@ -154,5 +163,6 @@ def _load(directory):
 
 
 def load_contract(directory=None):
-    """Load the contract from ``directory``, ``$VIO_CONTRACT_DIR`` or pkg-config."""
-    return _load(find_contract_dir(directory).resolve())
+    """Load the contract from ``directory``, ``$VIO_CONTRACT_DIR`` or pkg-config,
+    with BoardRunner's model rules."""
+    return _load(find_contract_dir(directory).resolve(), Path(RULES_FILE).resolve())

@@ -28,3 +28,6 @@ version = { attr = "boardrunner.__version__" }
 
 [tool.setuptools.packages.find]
 include = ["boardrunner*"]
+
+[tool.setuptools.package-data]
+"boardrunner.viomapper.codegen.prompts" = ["model_rules.md"]

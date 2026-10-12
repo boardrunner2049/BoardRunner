@@ -86,7 +86,7 @@ def _contract_dir_option(f):
         type=click.Path(file_okay=False, exists=True, resolve_path=True),
         default=None,
         metavar='PATH',
-        help='LibVIO model contract directory (rules, API reference, host functions) for the prompts. '
+        help='LibVIO model contract directory (API summary, host functions) for the prompts. '
              'Default: $VIO_CONTRACT_DIR, else `pkg-config --variable=contractdir vio`.'
     )(f)
 

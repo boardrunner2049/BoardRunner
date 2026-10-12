@@ -50,8 +50,8 @@ this creates cascading failures in the emulation pipeline.
 """
 
 
-# ── The model contract (rules, LibVIO API, host functions) comes from LibVIO ─
-# See contract.py. Everything below is BoardRunner's own: how the pipeline
+# ── The LibVIO API and host functions come from LibVIO, the rules from ────────
+# model_rules.md. See contract.py. Everything below is BoardRunner's own: how the pipeline
 # asks for a model, not what a model is.
 
 def _contract(contract):

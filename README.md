@@ -34,7 +34,7 @@ export FASTDYN_REPO_ROOT=/path/to/built/FastDyn
 ```
 
 LibVIO is found through `pkg-config vio`; set `PKG_CONFIG_PATH` to an
-installed LibVIO (1.x, model contract 1.2 or later). The tests need neither:
+installed LibVIO (1.x, model contract 1.2 or later, or 2.x). The tests need neither:
 they use a small copy of the contract in `tests/fixtures/contract`.
 
 ## Usage
@@ -102,10 +102,11 @@ FastDyn and cover both the `boardrunner.*` and `fastdyn.*` loggers. Errors
 end with exit status 2. `codegen` needs `OPENAI_API_KEY` (or `--env-file`)
 for OpenAI, or `--model-provider ollama`.
 
-The prompts take the rules a model follows, the LibVIO API and the
-emulator's host functions from LibVIO's model contract, found with
-`pkg-config --variable=contractdir vio`; `codegen` and `rca` accept
-`--contract-dir PATH` (or `$VIO_CONTRACT_DIR`) instead. Generated models use
+The prompts take the LibVIO API and the emulator's host functions from
+LibVIO's model contract, found with `pkg-config --variable=contractdir vio`;
+`codegen` and `rca` accept `--contract-dir PATH` (or `$VIO_CONTRACT_DIR`)
+instead. The rules a model follows are BoardRunner's own
+(`boardrunner/viomapper/codegen/prompts/model_rules.md`). Generated models use
 FastDyn's model interface (`<fastdyn/device_model.h>`, ABI v2) and LibVIO v1;
 `codegen --compile` builds them with FastDyn's model builder into
 `--build-dir` (default `build/models`) and sends compiler errors back to

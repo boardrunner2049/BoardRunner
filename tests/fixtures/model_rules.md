@@ -1,6 +1,6 @@
 # Rules for device models
 
-A test copy of LibVIO's contract/model_rules.md: the same structure and
+A test copy of BoardRunner's model_rules.md: the same structure and
 markers, shorter text. The functions a model can call are the emulator's
 host functions<!-- vio --> and the LibVIO API<!-- /vio -->.
 

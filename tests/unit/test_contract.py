@@ -1,4 +1,5 @@
-"""The LibVIO model contract as prompt text (codegen/prompts/contract.py)."""
+"""LibVIO's model contract and BoardRunner's rules as prompt text
+(codegen/prompts/contract.py)."""
 
 import os
 import shutil
@@ -49,11 +50,11 @@ def test_a_missing_contract_says_how_to_provide_one(monkeypatch):
         load_contract()
 
 
-@pytest.mark.parametrize("version", ["1.1.0", "2.0.0", "one"])
+@pytest.mark.parametrize("version", ["1.1.0", "3.0.0", "one"])
 def test_unsupported_versions_are_refused(contract_copy, version):
     (contract_copy / "VERSION").write_text(version + "\n")
 
-    with pytest.raises(ContractError, match="need 1.2 or a later 1.x|not a version"):
+    with pytest.raises(ContractError, match="need 1.2 or later, up to 2.x|not a version"):
         load_contract(contract_copy)
 
 
@@ -124,10 +125,23 @@ def _installed_contract_dir():
     return None
 
 
-def test_the_real_libvio_contract_loads():
+REAL_RULES = Path(contract_module.__file__).resolve().parent / "model_rules.md"
+
+
+def test_the_rules_are_boardrunners_own(contract_copy, test_contract):
+    (contract_copy / "model_rules.md").write_text("# A 1.x contract's rules, not used\n")
+
+    contract = load_contract(contract_copy)
+
+    assert contract.rules() == load_contract(test_contract).rules()
+    assert "not used" not in contract.rules()
+
+
+def test_the_real_libvio_contract_loads(monkeypatch):
     directory = _installed_contract_dir()
     if directory is None or not directory.is_dir():
         pytest.skip("no LibVIO contract (set BOARDRUNNER_REAL_CONTRACT or install LibVIO)")
+    monkeypatch.setattr(contract_module, "RULES_FILE", REAL_RULES)
 
     contract = load_contract(directory)
 
