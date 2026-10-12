@@ -17,6 +17,19 @@ MAXIM_PATH=/path/to/MaximSDK ./flash.sh    # flashes idle_firmware_max78000.elf
 
 Flash it once; it stays on the board until something else is flashed.
 
+## Run with the board
+
+FastDyn reaches the MAX78000 through an OpenOCD server (`backend = "openocd"`
+in the configurations), which it does not start itself. Keep one running in
+a second terminal during every hardware-in-the-loop run:
+
+```bash
+$MAXIM_PATH/Tools/OpenOCD/openocd -s $MAXIM_PATH/Tools/OpenOCD/scripts \
+    -f interface/cmsis-dap.cfg -f target/max78000.cfg
+```
+
+FastDyn connects to its TCL port (6666). Stop it before flashing again.
+
 ## Interrupt numbers
 
 Each interrupt handler hands FastDyn the NVIC IRQ number, not the exception
