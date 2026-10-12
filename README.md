@@ -8,8 +8,10 @@ learned models and [LibVIO](https://github.com/PSecLab/LibVIO).
 
 ## Paper
 
-BoardRunner is described in our CCS'26 paper. The version evaluated there is
-tagged `v1.0-ccs26`; artifact DOI: **TODO(DOI)**.
+BoardRunner is described in our CCS'26 paper. The artifact as evaluated is
+archived at https://doi.org/10.6084/m9.figshare.33941068; `ARTIFACT.md` maps
+each experiment of the paper to its folder here and its published Docker
+image.
 
 ## Setup
 
