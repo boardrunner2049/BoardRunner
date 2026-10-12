@@ -7,7 +7,7 @@
 #   git -c protocol.file.allow=always submodule update --init deps/fastdyn
 #   git -C deps/fastdyn submodule update --init --depth 1 \
 #       third_party/common/qemu third_party/common/libhw \
-#       third_party/common/cmsis-svd-data device_models/elder/inih
+#       third_party/common/cmsis-svd-data
 # LibVIO comes from its own checkout:
 #   docker build --build-context libvio=/path/to/LibVIO -t boardrunner .
 
