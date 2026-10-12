@@ -34,6 +34,8 @@ def test_no_old_interface_is_left(model):
                 "api_i2c_init_bus", "api_spi_init_bus"):
         assert old not in text, old
     assert not re.search(r"^static \w+ \*?g_\w+(\s*=[^;]*)?;", text, re.M), "global state"
+    # the fields init sets after calloc (base, host, name) must survive
+    assert not re.search(r"memset\(s, 0, sizeof\(\*s\)\)", text), "init wipes the instance"
     if _is_slave(model):
         assert "const int vio_slave_abi = VIO_SLAVE_ABI_VERSION;" in text
     else:
@@ -68,6 +70,11 @@ def test_hybrid_models_build_and_export_only_their_interface(tmp_path):
         symbols = subprocess.run(["nm", "-D", "--defined-only", result.output], capture_output=True,
                                  text=True, check=True).stdout
         exported = {line.split()[-1] for line in symbols.splitlines() if line.split()[1] in "TDRB"}
+        undefined = subprocess.run(["nm", "-D", "--undefined-only", result.output], capture_output=True,
+                                   text=True, check=True).stdout.split()
+        # an old helper still called compiles (implicit declaration) but cannot be resolved at load
+        assert not [u for u in undefined if u.startswith(("dev_", "slave_", "api_i2c_init", "api_spi_init"))], \
+            (result.name, undefined)
         if result.name.endswith("_slave"):
             assert "vio_slave_abi" in exported and exported <= {
                 "vio_slave_abi", "vio_i2c_slave_init", "vio_i2c_slave_event", "vio_i2c_slave_send",

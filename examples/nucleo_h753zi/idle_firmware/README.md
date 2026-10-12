@@ -31,6 +31,16 @@ reaches the firmware. Check a build before flashing it:
 arm-none-eabi-objdump -d build/idlefirmware.axf | grep -A3 '<EXTI15_10_IRQHandler>:' | grep -oE '#[0-9]+'   # #40
 ```
 
+Only peripheral interrupts are forwarded. The Cortex-M exceptions (SysTick,
+PendSV, SVC, ...) return at once on the board: the firmware in QEMU starts
+SysTick on the real chip through passthrough (`HAL_Init()`), and a `bkpt` on
+every tick would keep the board halted, so no peripheral interrupt would reach
+QEMU. The fault handlers loop, for inspection with a debugger. Check a build:
+
+```bash
+arm-none-eabi-objdump -d build/idlefirmware.axf | grep -A1 '<SysTick_Handler>:'   # bx lr
+```
+
 ## Rebuild it
 
 The build uses clang with the Arm GNU toolchain's headers and libraries
