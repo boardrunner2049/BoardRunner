@@ -456,7 +456,7 @@ def trace_command(config, output, run_dir, seconds, stimulus):
               help='Name of the model (default: the peripheral); required for several peripherals.')
 @click.option('-ms', '--model-source', 'model_sources', type=str, multiple=True,
               help='Peripheral(s) whose trace is the primary source for the model.')
-@click.option('-m', '--model', 'model_specs', type=str, multiple=True, metavar='NAME:OUTPUT:PERIPH[,PERIPH]',
+@click.option('-m', '--model-spec', 'model_specs', type=str, multiple=True, metavar='NAME:OUTPUT:PERIPH[,PERIPH]',
               help='Several models, learned separately and corrected together. Repeat per model; replaces '
                    '-p/-o/-mname. Example: -m ADC:adc.c:ADC1,ADC2 -m DMA:dma.c:DMA1,DMAMUX1')
 @click.option('--device', 'device_map', type=str, multiple=True, metavar='MODEL=DEVICE',
@@ -484,12 +484,12 @@ def pipeline_command(ctx, hardware_log, config, work_dir, peripherals, output, m
 
     if model_specs:
         if peripherals or output or model_name or model_sources:
-            raise click.UsageError("-m/--model replaces -p, -o, -mname and -ms; use one form.")
+            raise click.UsageError("-m/--model-spec replaces -p, -o, -mname and -ms; use one form.")
         models = []
         for spec in model_specs:
             parts = spec.split(':')
             if len(parts) != 3 or not all(parts):
-                raise click.BadParameter(f"'{spec}' must be NAME:OUTPUT:PERIPH[,PERIPH]", param_hint='--model')
+                raise click.BadParameter(f"'{spec}' must be NAME:OUTPUT:PERIPH[,PERIPH]", param_hint='--model-spec')
             name, out, periphs = parts
             models.append(ModelSpec(name, str(Path(out).resolve()), [p for p in periphs.split(',') if p]))
     else:

@@ -73,8 +73,8 @@ Each round compiles the model into `--build-dir`, runs `board.toml` on
 FastDyn for `--seconds` with the device of the same name (`usart2`; or
 `--device USART2=NAME`) loading it, and stops when the run's trace matches
 the hardware trace or after `--max-rounds` (10). Several models learned
-separately and corrected together take `-m NAME:OUTPUT:PERIPH[,PERIPH]` per
-model. Every round is recorded in `work/pipeline.json`; runs are in
+separately and corrected together take `-m`/`--model-spec NAME:OUTPUT:PERIPH[,PERIPH]`
+per model. Every round is recorded in `work/pipeline.json`; runs are in
 `work/runs/round_N/`. `codegen` sends the work
 directory's `revised_prompt.txt` (from `rca`) if there is one, else its
 `initial_prompt.txt`, and builds the initial prompt from the encoder output

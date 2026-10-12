@@ -281,3 +281,21 @@ def test_codegen_says_when_prompt_options_do_not_apply(encoded, monkeypatch, cap
     assert result.exit_code == 0, result.output
     assert "Using the existing initial_prompt.txt; -p, --no-vio only apply when the prompt is built" \
         in caplog.text
+
+
+def test_no_command_declares_an_option_name_twice():
+    import click
+    for name, command in cli.commands.items():
+        seen = {}
+        for param in command.params:
+            if isinstance(param, click.Option):
+                for opt in param.opts + param.secondary_opts:
+                    assert opt not in seen, (name, opt, seen.get(opt), param.name)
+                    seen[opt] = param.name
+
+
+def test_pipeline_takes_model_specs_and_the_llm_model_apart(tmp_path):
+    (tmp_path / "board.toml").write_text("")
+    result = _run("pipeline", "-hw", TRACE, "-c", tmp_path / "board.toml", "--model", "gpt-5.4",
+                  "--model-spec", "USART:usart.c:USART2", "-p", "USART2", "-o", "x.c", *SVD_ARGS)
+    assert "-m/--model-spec replaces -p" in result.output
