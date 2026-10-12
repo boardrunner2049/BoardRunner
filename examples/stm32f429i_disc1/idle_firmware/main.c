@@ -320,6 +320,9 @@ int timer_test(void);
 #ifdef TRAIN_GPIO
 int gpio_test(void);
 #endif
+#ifdef TRAIN_GPIO_INT
+int gpio_int_test(void);
+#endif
 #ifdef TRAIN_USART
 int usart_test(void);
 #endif
@@ -333,6 +336,9 @@ int main() {
 #endif
 #ifdef TRAIN_GPIO
 		gpio_test();
+#endif
+#ifdef TRAIN_GPIO_INT
+		gpio_int_test();
 #endif
 #ifdef TRAIN_USART
 		usart_test();

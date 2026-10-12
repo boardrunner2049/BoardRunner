@@ -20,7 +20,7 @@ HAL_INSTALL ?= ./stm32f4xx_hal_driver/
 
 
 
-SOURCE_FILES += main.c interrupt_server.c simple_tests/timer_test.c simple_tests/gpio_test.c simple_tests/usart_test.c simple_tests/adc_dma_test.c
+SOURCE_FILES += main.c interrupt_server.c simple_tests/timer_test.c simple_tests/gpio_test.c simple_tests/gpio_int_test.c simple_tests/usart_test.c simple_tests/adc_dma_test.c
 
 #Finalize configuration variables based on project/demo
 CFLAGS += ${CFLAGS_${PROJECT}_${DEMO}} -O0 -nostdlib -DSTM32F429xx
