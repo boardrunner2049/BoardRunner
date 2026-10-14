@@ -1,0 +1,15 @@
+BoardRunner
+Copyright 2026 PSecLab
+
+BoardRunner's own source code is licensed under the Apache License 2.0; see
+LICENSE. The repository also carries third-party files that keep their own
+licenses:
+
+* examples/*/idle_firmware/ and the evaluation firmware folders: startup and
+  linker files from STMicroelectronics (under ST's license) and build files
+  from Analog Devices / Maxim Integrated (Apache-2.0).
+* The prebuilt example and evaluation firmware (.elf, .axf, .bin) are built
+  with the vendors' libraries (STM32Cube HAL, CMSIS, lwIP and others) and
+  contain them under those projects' licenses.
+
+deps/fastdyn is FastDyn, a separate project with its own LICENSE and NOTICE.

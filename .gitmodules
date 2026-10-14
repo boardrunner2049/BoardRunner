@@ -1,3 +1,3 @@
 [submodule "deps/fastdyn"]
 	path = deps/fastdyn
-	url = /scratch/Fastdyn/restructure_fastdyn/FastDyn
+	url = https://github.com/boardrunner2049/FastDyn.git

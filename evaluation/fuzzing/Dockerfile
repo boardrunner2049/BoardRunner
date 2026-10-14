@@ -4,7 +4,7 @@
 #
 # Build from the repository root, after checking out FastDyn and the
 # submodules it builds from (as for the main Dockerfile):
-#   git -c protocol.file.allow=always submodule update --init deps/fastdyn
+#   git submodule update --init deps/fastdyn
 #   git -C deps/fastdyn submodule update --init --depth 1 \
 #       third_party/common/qemu third_party/common/libhw \
 #       third_party/common/cmsis-svd-data

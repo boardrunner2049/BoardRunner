@@ -2,7 +2,7 @@
 
 Artifact for *BoardRunner: Automatic Firmware Rehosting Using High-Fidelity Compositional Device Models*. This file is the entry point for evaluators: what is where, and how to run each experiment of the paper. Every experiment is a published, self-contained Docker image run as `docker run --rm` with a host directory mounted at `/results`; nothing needs to be built, and this repository is only needed to read sources, configurations and the shipped measurements. The README next to each experiment gives the details.
 
-Archive (complete source snapshot as evaluated, the paper and the appendix): https://doi.org/10.6084/m9.figshare.33941068 · Images: https://hub.docker.com/u/pseclab · Sources: https://github.com/PSecLab/BoardRunner (this repository), the emulator https://github.com/PSecLab/FastDyn (pinned as `deps/fastdyn`), https://github.com/PSecLab/LibVIO, https://github.com/PSecLab/libhw and the patched QEMU https://github.com/Arslan8/qemu (branch `fastdyn`). The images were built from the archived snapshot; the experiment folders here keep their Dockerfiles.
+Archive (complete source snapshot as evaluated, the paper and the appendix): https://doi.org/10.6084/m9.figshare.33941068 · Images: https://hub.docker.com/u/pseclab · Sources: https://github.com/boardrunner2049/BoardRunner (this repository), the emulator https://github.com/boardrunner2049/FastDyn (pinned as `deps/fastdyn`), https://github.com/boardrunner2049/LibVIO, https://github.com/boardrunner2049/libhw and the patched QEMU https://github.com/Arslan8/qemu (branch `fastdyn`). The images were built from the archived snapshot; the experiment folders here keep their Dockerfiles.
 
 ## Requirements
 

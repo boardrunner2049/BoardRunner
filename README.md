@@ -4,21 +4,27 @@ BoardRunner rehosts embedded firmware automatically. It observes the firmware
 running on the real board (hardware in the loop), learns a model of each
 peripheral from that trace (VIOMapper: Encoder, CodeGen, Verifier, RCA), and
 then runs the firmware without the board, on [FastDyn](deps/fastdyn) with the
-learned models and [LibVIO](https://github.com/PSecLab/LibVIO).
+learned models and [LibVIO](https://github.com/boardrunner2049/LibVIO).
 
 ## Paper
 
 BoardRunner is described in our CCS'26 paper. The artifact as evaluated is
-archived at https://doi.org/10.6084/m9.figshare.33941068; `ARTIFACT.md` maps
-each experiment of the paper to its folder here and its published Docker
-image.
+archived at https://doi.org/10.6084/m9.figshare.33941068; that archive is the
+paper version. `ARTIFACT.md` maps each experiment of the paper to its folder
+here and its published Docker image.
+
+This repository is BoardRunner restructured as a standalone tool on FastDyn
+1.0 and LibVIO 1. The examples' models use FastDyn's device-model ABI v2.
+The models recorded in `evaluation/ablation/` are kept as the paper's results
+and use the older model interface; they do not build against FastDyn 1.0.
+TODO: migrate them once the ABI and the model contract are stable.
 
 ## Setup
 
 FastDyn is a submodule in `deps/fastdyn`:
 
 ```bash
-git -c protocol.file.allow=always submodule update --init deps/fastdyn
+git submodule update --init deps/fastdyn
 python3 -m venv .venv && . .venv/bin/activate
 pip install -r deps/fastdyn/requirements.txt
 pip install -e deps/fastdyn/src
@@ -159,3 +165,9 @@ evaluation/
 tests/
 Dockerfile           image with QEMU, FastDyn, libhw, LibVIO and BoardRunner; runs evaluation/nucleo_f103rb/run.sh
 ```
+
+## License
+
+BoardRunner is licensed under the [Apache License 2.0](LICENSE). Copyright
+2026 PSecLab. The bundled third-party files keep their own licenses; see
+[NOTICE](NOTICE).
